@@ -42,6 +42,8 @@ export default function CuentasPorCobrarPage() {
 
   const [cooperativeFilter, setCooperativeFilter] = useState('')
   const [memberSearch, setMemberSearch] = useState('')
+  const [currentPage, setCurrentPage] = useState(1)
+  const [itemsPerPage, setItemsPerPage] = useState(20)
 
   const [paymentModal, setPaymentModal] = useState(false)
   const [paymentAmount, setPaymentAmount] = useState('')
@@ -138,6 +140,11 @@ export default function CuentasPorCobrarPage() {
     )
   }, [sales])
 
+  useEffect(() => {
+    setCurrentPage(1)
+    setSelectedIds([])
+  }, [cooperativeFilter, memberSearch, itemsPerPage])
+
   const filteredSales = useMemo(() => {
     const q = memberSearch.toLowerCase().trim()
 
@@ -157,6 +164,11 @@ export default function CuentasPorCobrarPage() {
       return matchCoop && matchMember && balanceOf(sale) > 0
     })
   }, [sales, customers, payments, cooperativeFilter, memberSearch])
+
+  const totalReceivablePages = Math.max(1, Math.ceil(filteredSales.length / itemsPerPage))
+  const firstVisibleSale = filteredSales.length === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1
+  const lastVisibleSale = Math.min(filteredSales.length, currentPage * itemsPerPage)
+  const paginatedSales = filteredSales.slice(firstVisibleSale === 0 ? 0 : firstVisibleSale - 1, lastVisibleSale)
 
   const selectedSales = filteredSales.filter((sale) => selectedIds.includes(sale.id))
 
@@ -293,15 +305,32 @@ export default function CuentasPorCobrarPage() {
           <input
             value={memberSearch}
             onChange={(e) => setMemberSearch(e.target.value)}
-            placeholder="Buscar por socio, cédula, teléfono o factura..."
+            placeholder="Buscar por socio, cÃ©dula, telÃ©fono o factura..."
             className="w-full bg-transparent outline-none"
           />
         </div>
       </div>
 
       <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm">
-        <div className="border-b border-zinc-200 p-5">
-          <h2 className="text-xl font-semibold">Facturas pendientes</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 p-5">
+          <div>
+            <h2 className="text-xl font-semibold">Facturas pendientes</h2>
+            <p className="text-sm text-zinc-500">
+              Mostrando {firstVisibleSale}-{lastVisibleSale} de {filteredSales.length} facturas
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-sm font-semibold text-zinc-600">
+            Facturas por pagina
+            <select
+              value={itemsPerPage}
+              onChange={(e) => setItemsPerPage(Number(e.target.value))}
+              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-zinc-950 outline-none focus:border-emerald-500"
+            >
+              {[10, 20, 50, 100].map((size) => (
+                <option key={size} value={size}>{size}</option>
+              ))}
+            </select>
+          </label>
         </div>
 
         {loading ? (
@@ -325,7 +354,7 @@ export default function CuentasPorCobrarPage() {
               </thead>
 
               <tbody>
-                {filteredSales.map((sale) => {
+                {paginatedSales.map((sale) => {
                   const customer = customerOf(sale)
 
                   return (
@@ -348,7 +377,7 @@ export default function CuentasPorCobrarPage() {
                           {customer?.full_name || 'Sin socio'}
                         </p>
                         <p className="text-sm text-zinc-500">
-                          {customer?.cedula || '-'} · {customer?.phone || '-'}
+                          {customer?.cedula || '-'} Â· {customer?.phone || '-'}
                         </p>
                       </td>
 
@@ -376,6 +405,29 @@ export default function CuentasPorCobrarPage() {
         )}
       </div>
 
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white p-4 text-sm text-zinc-600 shadow-sm">
+        <span>
+          Pagina {currentPage} de {totalReceivablePages}
+        </span>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+            disabled={currentPage <= 1}
+            className="rounded-xl border border-zinc-200 px-4 py-2 font-semibold text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Anterior
+          </button>
+          <button
+            type="button"
+            onClick={() => setCurrentPage((page) => Math.min(totalReceivablePages, page + 1))}
+            disabled={currentPage >= totalReceivablePages}
+            className="rounded-xl border border-zinc-200 px-4 py-2 font-semibold text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Siguiente
+          </button>
+        </div>
+      </div>
       {paymentModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl">

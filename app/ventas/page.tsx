@@ -10,6 +10,7 @@ import { getCurrentStoreId } from '@/lib/store-context'
 import ExportModal from '@/components/export/ExportModal'
 import { exportSales as exportSalesFile } from '@/lib/export/sales-export'
 import type { ExportFormat, SalesExportChannel, SalesExportPeriod, SalesExportStatus } from '@/lib/export/export-types'
+import { getSaleStatusVisual } from '@/lib/sale-status'
 
 type Sale = {
   id: string
@@ -54,6 +55,14 @@ type PaymentMethod = {
   name: string
 }
 
+type CreditNote = {
+  id: string
+  sale_id: string
+  credit_note_number: string | null
+  total: number
+  created_at: string
+}
+
 type CustomerLookup = { id: string; full_name: string }
 
 export default function VentasPage() {
@@ -76,6 +85,7 @@ export default function VentasPage() {
   const [saleItems, setSaleItems] = useState<SaleItem[]>([])
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null)
+  const [creditNotes, setCreditNotes] = useState<CreditNote[]>([])
   const [detailsLoading, setDetailsLoading] = useState(false)
 
   useEffect(() => {
@@ -238,6 +248,7 @@ export default function VentasPage() {
     setSaleItems([])
     setCustomer(null)
     setPaymentMethod(null)
+    setCreditNotes([])
 
     const { data: itemsData, error: itemsError } = await supabase
       .from('sale_items')
@@ -270,6 +281,14 @@ export default function VentasPage() {
       setPaymentMethod(methodData || null)
     }
 
+    const { data: creditNoteRows } = await supabase
+      .from('credit_notes')
+      .select('id, sale_id, credit_note_number, total, created_at')
+      .eq('sale_id', sale.id)
+      .order('created_at', { ascending: false })
+
+    setCreditNotes(creditNoteRows || [])
+
     setDetailsLoading(false)
   }
 
@@ -278,6 +297,7 @@ export default function VentasPage() {
     setSaleItems([])
     setCustomer(null)
     setPaymentMethod(null)
+    setCreditNotes([])
   }
 
   function rangeForExportPeriod() {
@@ -352,7 +372,7 @@ export default function VentasPage() {
         createdAt: sale.created_at,
         customer: sale.fiscal_customer_name || (sale.customer_id ? customerMap.get(sale.customer_id) || 'Cliente' : 'Consumidor final'),
         channel: sale.sale_channel || 'POS',
-        status: sale.status || 'paid',
+        status: getSaleStatusVisual(sale.status).label,
         paymentMethod: sale.payment_method_id ? methodMap.get(sale.payment_method_id) || '-' : '-',
         itemCount: items.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
         total: saleBusinessTotal(sale),
@@ -591,9 +611,7 @@ export default function VentasPage() {
                     </td>
 
                     <td className="p-4">
-                      <span className="rounded-full bg-emerald-50 px-3 py-1 text-sm font-bold text-emerald-700">
-                        {sale.status}
-                      </span>
+                      <SaleStatusBadge status={sale.status} />
                     </td>
 
                     <td className="p-4">
@@ -662,6 +680,31 @@ export default function VentasPage() {
                   <InfoCard title="Método pago" value={paymentMethod?.name || '-'} />
                 </div>
 
+                {creditNotes.length > 0 && (
+                  <div className="mb-6 rounded-2xl border border-orange-200 bg-orange-50 p-4">
+                    <h3 className="font-bold text-orange-800">Notas de crédito</h3>
+                    <div className="mt-3 space-y-2">
+                      {creditNotes.map((note) => (
+                        <div key={note.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white p-3">
+                          <div>
+                            <p className="font-bold">{note.credit_note_number || note.id.slice(0, 8).toUpperCase()}</p>
+                            <p className="text-sm text-zinc-500">
+                              {formatDate(note.created_at)} · {formatMoney(note.total)}
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => window.open(`/ventas/notas-credito/${note.id}/imprimir`, '_blank')}
+                            className="inline-flex items-center gap-2 rounded-xl border border-zinc-300 px-4 py-2 text-sm font-semibold hover:bg-zinc-100"
+                          >
+                            <Printer size={16} />
+                            Imprimir nota de crédito
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className="rounded-2xl border border-zinc-200">
                   <div className="border-b border-zinc-200 p-4">
                     <h3 className="font-bold">Productos vendidos</h3>
@@ -719,6 +762,16 @@ export default function VentasPage() {
                     <Printer size={18} />
                     Reimprimir
                   </button>
+
+                  {creditNotes[0] && (
+                    <button
+                      onClick={() => window.open(`/ventas/notas-credito/${creditNotes[0].id}/imprimir`, '_blank')}
+                      className="inline-flex items-center gap-2 rounded-xl border border-orange-300 px-5 py-3 font-semibold text-orange-700 hover:bg-orange-50"
+                    >
+                      <FileBadge2 size={18} />
+                      Imprimir nota de crédito
+                    </button>
+                  )}
 
                   <button
                     onClick={closeDetails}
@@ -920,6 +973,16 @@ function FiscalStatusBadge({ status }: { status: string | null }) {
   return (
     <span className={`rounded-full px-3 py-1 text-sm font-bold ${styles[status] || 'bg-zinc-100 text-zinc-600'}`}>
       {labels[status] || status}
+    </span>
+  )
+}
+
+function SaleStatusBadge({ status }: { status: string | null }) {
+  const visual = getSaleStatusVisual(status)
+
+  return (
+    <span className={`rounded-full px-3 py-1 text-sm font-bold ${visual.className}`}>
+      {visual.label}
     </span>
   )
 }

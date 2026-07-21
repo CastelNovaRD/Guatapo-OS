@@ -80,7 +80,7 @@ export default function CuadresPage() {
                   <th className="p-4">Fecha</th>
                   <th className="p-4">Apertura</th>
                   <th className="p-4">Cierre</th>
-                  <th className="p-4">Caja + ventas</th>
+                  <th className="p-4">Efectivo esperado</th>
                   <th className="p-4">Ganancia</th>
                   <th className="p-4">Comisión tarjeta</th>
                   <th className="p-4">Descuadre</th>

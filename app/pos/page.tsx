@@ -7,6 +7,7 @@ import AppShell from '@/components/AppShell'
 import { formatMoney } from '@/lib/format'
 import { getCurrentStoreId } from '@/lib/store-context'
 import { logAudit } from '@/lib/audit'
+import { calculateCashRegisterTotals } from '@/lib/cash-register'
 import {
   CheckCircle,
   FileBadge2,
@@ -32,6 +33,11 @@ type Product = {
   stock: number
   product_type: string
   category: string | null
+}
+
+type ProductCategory = {
+  id: string
+  name: string
 }
 
 type ProductImage = {
@@ -97,11 +103,19 @@ type LastInvoice = {
 
 type CloseSummary = {
   cashId: string
+  openingAmount: number
+  manualIn: number
+  manualOut: number
   totalSales: number
   totalCardFee: number
   totalProfit: number
   difference: number
   closingAmount: number
+  expectedCash: number
+  cashSales: number
+  cardSales: number
+  transferSales: number
+  cashRefunds: number
 }
 
 type ExistingCustomer = {
@@ -143,6 +157,10 @@ function formatImei(value: string) {
 
 export default function POSPage() {
   const [products, setProducts] = useState<Product[]>([])
+  const [productCategories, setProductCategories] = useState<ProductCategory[]>([])
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [posFeaturedProductsLimit, setPosFeaturedProductsLimit] = useState(10)
+  const [productsLoading, setProductsLoading] = useState(false)
   const [storeId, setStoreId] = useState<string | null>(null)
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([])
   const [cart, setCart] = useState<CartItem[]>([])
@@ -179,7 +197,10 @@ export default function POSPage() {
   const [closingAmount, setClosingAmount] = useState('')
   const [cashLoading, setCashLoading] = useState(true)
   const [closeSummary, setCloseSummary] = useState<CloseSummary | null>(null)
-
+  const [closeModalOpen, setCloseModalOpen] = useState(false)
+  const [closePreview, setClosePreview] = useState<CloseSummary | null>(null)
+  const [closingProcessing, setClosingProcessing] = useState(false)
+  const [closeError, setCloseError] = useState('')
   const [lastInvoice, setLastInvoice] = useState<LastInvoice | null>(null)
 
   const searchRef = useRef<HTMLInputElement>(null)
@@ -215,7 +236,9 @@ export default function POSPage() {
       .maybeSingle()
 
     if (error) {
-      alert('Error cargando caja: ' + error.message)
+      console.warn('[Caja] Error cargando caja abierta en POS:', error.message)
+      setCashLoading(false)
+      return alert('No se pudo verificar la caja. Reintentando...')
     }
 
     setOpenCash(data || null)
@@ -225,40 +248,112 @@ export default function POSPage() {
   async function loadData(currentStoreId = storeId) {
     if (!currentStoreId) return
 
-    const { data: productsData } = await supabase
-      .from('products')
-      .select('id, name, sku, barcode, image_url, sale_price, cost, stock, product_type, category')
-      .eq('store_id', currentStoreId)
-      .eq('active', true)
-      .order('name')
+    const [
+      { data: methodsData, error: methodsError },
+      { data: customersData },
+      { data: categoriesData },
+      { data: storeData },
+    ] = await Promise.all([
+      supabase
+        .from('payment_methods')
+        .select('id, name, fee_percent')
+        .eq('active', true)
+        .order('fee_percent'),
+      supabase
+        .from('customers')
+        .select('id, full_name, phone, cedula')
+        .eq('store_id', currentStoreId)
+        .order('full_name'),
+      supabase
+        .from('categories')
+        .select('id, name')
+        .eq('store_id', currentStoreId)
+        .eq('active', true)
+        .order('name'),
+      supabase
+        .from('stores')
+        .select('pos_featured_products_limit')
+        .eq('id', currentStoreId)
+        .maybeSingle(),
+    ])
 
-    const { data: methodsData, error: methodsError } = await supabase
-      .from('payment_methods')
-      .select('id, name, fee_percent')
-      .eq('active', true)
-      .order('fee_percent')
+    const configuredLimit = Number((storeData as { pos_featured_products_limit?: number } | null)?.pos_featured_products_limit || 10)
+    const safeLimit = [5, 10, 20, 50].includes(configuredLimit) ? configuredLimit : 10
+    setPosFeaturedProductsLimit(safeLimit)
 
-    const { data: imagesData } = await supabase
-      .from('product_images')
-     .select('id, product_id, image_url, is_primary, sort_order')
-     .eq('store_id', currentStoreId)
-     .order('sort_order')
-
-    const { data: customersData } = await supabase
-      .from('customers')
-      .select('id, full_name, phone, cedula')
-      .eq('store_id', currentStoreId)
-      .order('full_name')
-
-    setProducts(productsData || [])
     const nextPaymentMethods =
       methodsError || !methodsData?.length ? FALLBACK_PAYMENT_METHODS : methodsData
 
     setPaymentMethods(nextPaymentMethods)
-    setProductImages(imagesData || [])
     setCustomers((customersData || []) as ExistingCustomer[])
+    setProductCategories(categoriesData || [])
 
     if (nextPaymentMethods.length) setPaymentMethodId(nextPaymentMethods[0].id)
+    await loadPosProducts(currentStoreId, safeLimit)
+  }
+
+  async function loadPosProducts(currentStoreId = storeId, limit = posFeaturedProductsLimit) {
+    if (!currentStoreId) return
+
+    setProductsLoading(true)
+    const cleanSearch = debouncedSearch.replace(/[%_]/g, '').trim()
+    let productsData: Product[] = []
+
+    if (!cleanSearch && !categoryFilter) {
+      const { data, error } = await supabase.rpc('get_pos_featured_products', {
+        p_store_id: currentStoreId,
+        p_limit: limit,
+      })
+
+      if (!error && data) productsData = data as Product[]
+
+      if (error) {
+        const { data: fallbackData } = await supabase
+          .from('products')
+          .select('id, name, sku, barcode, image_url, sale_price, cost, stock, product_type, category')
+          .eq('store_id', currentStoreId)
+          .eq('active', true)
+          .gt('stock', 0)
+          .order('name')
+          .limit(limit)
+
+        productsData = fallbackData || []
+      }
+    } else {
+      let query = supabase
+        .from('products')
+        .select('id, name, sku, barcode, image_url, sale_price, cost, stock, product_type, category')
+        .eq('store_id', currentStoreId)
+        .eq('active', true)
+        .gt('stock', 0)
+
+      if (cleanSearch) {
+        query = query.or(`name.ilike.%${cleanSearch}%,sku.ilike.%${cleanSearch}%,barcode.ilike.%${cleanSearch}%,category.ilike.%${cleanSearch}%`)
+      }
+
+      if (categoryFilter) query = query.eq('category', categoryFilter)
+
+      const { data } = await query.order('name').limit(50)
+      productsData = data || []
+    }
+
+    setProducts(productsData)
+
+    const productIds = productsData.map((product) => product.id)
+    if (productIds.length > 0) {
+      const { data: imagesData } = await supabase
+        .from('product_images')
+        .select('id, product_id, image_url, is_primary, sort_order')
+        .eq('store_id', currentStoreId)
+        .in('product_id', productIds)
+        .order('sort_order')
+
+      setProductImages(imagesData || [])
+    } else {
+      setProductImages([])
+    }
+
+    setProductsLoading(false)
   }
 
   async function loadNextAvailableNcf(type = fiscalReceiptType) {
@@ -320,20 +415,61 @@ function getProductMainImage(product: Product) {
     await loadCash()
   }
 
-  async function closeRegister() {
-    if (!openCash) return
+  async function calculateCloseSummary(countedCash: number): Promise<CloseSummary | null> {
+    if (!openCash || !storeId) return null
 
-    const counted = Number(closingAmount || 0)
+    const { data: currentCash, error: cashError } = await supabase
+      .from('cash_registers')
+      .select('id, status, opening_amount')
+      .eq('store_id', storeId)
+      .eq('id', openCash.id)
+      .maybeSingle()
+
+    if (cashError) {
+      setCloseError('Error verificando caja: ' + cashError.message)
+      return null
+    }
+
+    if (!currentCash || currentCash.status !== 'open') {
+      setCloseError('Esta caja ya fue cerrada.')
+      return null
+    }
 
     const { data: sales, error: salesError } = await supabase
       .from('sales')
-      .select('id, total, card_fee, cash_received, cash_change')
+      .select('id, total, card_fee, cash_received, cash_change, payment_method_id')
       .eq('store_id', storeId)
       .eq('cash_register_id', openCash.id)
 
-    if (salesError) return alert('Error cargando ventas: ' + salesError.message)
+    if (salesError) {
+      setCloseError('Error cargando ventas: ' + salesError.message)
+      return null
+    }
 
     const saleIds = sales?.map((sale) => sale.id) || []
+    const methodIds = Array.from(new Set((sales || []).map((sale) => sale.payment_method_id).filter(Boolean))) as string[]
+    const paymentMethodMap = new Map<string, string>()
+
+    if (methodIds.length > 0) {
+      const { data: methodRows } = await supabase
+        .from('payment_methods')
+        .select('id, name')
+        .in('id', methodIds)
+
+      ;(methodRows || []).forEach((method) => paymentMethodMap.set(method.id, method.name || ''))
+    }
+
+    let creditNoteRefunds: { total: number; refund_method: string | null }[] = []
+
+    if (saleIds.length > 0) {
+      const { data: refundRows } = await supabase
+        .from('credit_notes')
+        .select('total, refund_method')
+        .eq('store_id', storeId)
+        .in('sale_id', saleIds)
+
+      creditNoteRefunds = refundRows || []
+    }
 
     let totalProfit = 0
 
@@ -343,7 +479,10 @@ function getProductMainImage(product: Product) {
         .select('cost, quantity, total')
         .in('sale_id', saleIds)
 
-      if (itemsError) return alert('Error calculando ganancias: ' + itemsError.message)
+      if (itemsError) {
+        setCloseError('Error calculando ganancias: ' + itemsError.message)
+        return null
+      }
 
       totalProfit =
         items?.reduce((sum, item) => {
@@ -355,31 +494,95 @@ function getProductMainImage(product: Product) {
         }, 0) || 0
     }
 
-    const businessSales =
-      sales?.reduce((sum, sale) => sum + Math.max(0, Number(sale.total || 0) - Number(sale.card_fee || 0)), 0) || 0
-    const totalSales = Number(openCash.opening_amount || 0) + businessSales
+    const cashTotals = calculateCashRegisterTotals({
+      openingAmount: Number(currentCash.opening_amount || 0),
+      countedCash,
+      sales: sales || [],
+      refunds: creditNoteRefunds,
+      paymentMethods: paymentMethodMap,
+    })
+    const totalCardFee = cashTotals.totalCardFee
 
-    const totalCardFee =
-      sales?.reduce((sum, sale) => sum + Number(sale.card_fee || 0), 0) || 0
+    return {
+      cashId: openCash.id,
+      openingAmount: Number(currentCash.opening_amount || 0),
+      manualIn: 0,
+      manualOut: 0,
+      totalSales: cashTotals.expectedCash,
+      totalCardFee,
+      totalProfit: Math.max(0, totalProfit - totalCardFee),
+      difference: cashTotals.difference,
+      closingAmount: countedCash,
+      expectedCash: cashTotals.expectedCash,
+      cashSales: cashTotals.cashSales,
+      cardSales: cashTotals.cardSales,
+      transferSales: cashTotals.transferSales,
+      cashRefunds: cashTotals.cashRefunds,
+    }
+  }
 
-    totalProfit = Math.max(0, totalProfit - totalCardFee)
+  async function openCloseRegisterPanel() {
+    if (!openCash) return
+    setClosingAmount('')
+    setCloseError('')
+    setCloseModalOpen(true)
+    const summary = await calculateCloseSummary(0)
+    if (summary) setClosePreview(summary)
+  }
 
-    const difference = counted - totalSales
+  function isValidClosingAmount() {
+    if (closingAmount.trim() === '') return false
+    const counted = Number(closingAmount)
+    return Number.isFinite(counted) && counted >= 0
+  }
 
-    const { error } = await supabase
+  async function closeRegister({ printAfterClose = false }: { printAfterClose?: boolean } = {}) {
+    if (!openCash || !storeId) return
+    if (!isValidClosingAmount()) {
+      setCloseError('Debes ingresar el monto contado antes de cerrar la caja.')
+      return
+    }
+    if (closingProcessing) return
+
+    setClosingProcessing(true)
+    setCloseError('')
+
+    const counted = Number(closingAmount)
+    const summary = await calculateCloseSummary(counted)
+
+    if (!summary) {
+      setClosingProcessing(false)
+      return
+    }
+
+    const { data: closedCash, error } = await supabase
       .from('cash_registers')
       .update({
         closing_amount: counted,
-        total_sales: totalSales,
-        total_card_fee: totalCardFee,
-        total_profit: totalProfit,
-        difference,
+        total_sales: summary.expectedCash,
+        total_card_fee: summary.totalCardFee,
+        total_profit: summary.totalProfit,
+        difference: summary.difference,
         status: 'closed',
         closed_at: new Date().toISOString(),
       })
+      .eq('store_id', storeId)
       .eq('id', openCash.id)
+      .eq('status', 'open')
+      .select('id')
+      .maybeSingle()
 
-    if (error) return alert('Error cerrando caja: ' + error.message)
+    if (error) {
+      setClosingProcessing(false)
+      setCloseError('Error cerrando caja: ' + error.message)
+      return
+    }
+
+    if (!closedCash) {
+      setClosingProcessing(false)
+      setCloseError('Esta caja ya fue cerrada.')
+      return
+    }
 
     await logAudit({
       storeId,
@@ -387,39 +590,45 @@ function getProductMainImage(product: Product) {
       action: 'close',
       entityType: 'cash_register',
       entityId: openCash.id,
-      summary: 'Caja cerrada. Conteo: ' + counted + '. Descuadre: ' + difference + '.',
-      afterData: { counted, totalSales, totalCardFee, totalProfit, difference },
+      summary: 'Caja cerrada. Conteo: ' + counted + '. Descuadre: ' + summary.difference + '.',
+      afterData: { counted, totalSales: summary.expectedCash, totalCardFee: summary.totalCardFee, totalProfit: summary.totalProfit, difference: summary.difference, cashTotals: summary },
     })
 
-    setCloseSummary({
-    cashId: openCash.id,
-    totalSales,
-    totalCardFee,
-    totalProfit,
-    difference,
-    closingAmount: counted,
-    })
-
+    setCloseSummary(summary)
+    setClosePreview(null)
+    setCloseModalOpen(false)
     setOpenCash(null)
     setClosingAmount('')
     setCart([])
+    window.dispatchEvent(new Event('guatapo:cash-updated'))
+
+    if (printAfterClose) window.open(`/cuadres/${summary.cashId}/imprimir`, '_blank')
+
     await loadCash()
+    setClosingProcessing(false)
   }
 
-  const productCategories = useMemo(() => {
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 350)
+    return () => window.clearTimeout(timer)
+  }, [search])
+
+  useEffect(() => {
+    if (storeId) void loadPosProducts(storeId)
+  }, [storeId, debouncedSearch, categoryFilter, posFeaturedProductsLimit])
+
+  const categoryOptions = useMemo(() => {
     const names = new Set<string>()
+    productCategories.forEach((category) => {
+      if (category.name?.trim()) names.add(category.name.trim())
+    })
     products.forEach((product) => {
       if (product.category?.trim()) names.add(product.category.trim())
     })
     return Array.from(names).sort((a, b) => a.localeCompare(b))
-  }, [products])
+  }, [productCategories, products])
 
-  const filteredProducts = products.filter((product) => {
-    const text = `${product.name} ${product.sku || ''} ${product.barcode || ''} ${product.category || ''}`.toLowerCase()
-    const matchesSearch = text.includes(search.toLowerCase())
-    const matchesCategory = categoryFilter ? product.category?.trim() === categoryFilter : true
-    return matchesSearch && matchesCategory
-  })
+  const filteredProducts = products
 
   const requiresCustomer = cart.some((item) =>
     ['phone', 'tablet', 'laptop'].includes(item.product_type)
@@ -948,7 +1157,28 @@ function getProductMainImage(product: Product) {
           </button>
         </div>
 
-        {closeSummary && (
+        {closeModalOpen && (
+        <CloseRegisterModal
+          summary={closePreview}
+          amount={closingAmount}
+          error={closeError}
+          processing={closingProcessing}
+          onAmountChange={(value) => {
+            setClosingAmount(value)
+            setCloseError('')
+          }}
+          onCancel={() => {
+            if (closingProcessing) return
+            setCloseModalOpen(false)
+            setClosePreview(null)
+            setClosingAmount('')
+            setCloseError('')
+          }}
+          onCloseWithoutPrint={() => closeRegister({ printAfterClose: false })}
+          onPrintAndClose={() => closeRegister({ printAfterClose: true })}
+        />
+      )}
+      {closeSummary && (
           <CloseSummaryModal
             summary={closeSummary}
             onClose={() => setCloseSummary(null)}
@@ -989,17 +1219,8 @@ function getProductMainImage(product: Product) {
             <RefreshCcw size={18} />
             Cambio
           </Link>
-
-          <input
-            type="number"
-            value={closingAmount}
-            onChange={(e) => setClosingAmount(e.target.value)}
-            placeholder="Efectivo contado"
-            className="w-48 rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-red-500"
-          />
-
           <button
-            onClick={closeRegister}
+            onClick={openCloseRegisterPanel}
             className="rounded-xl bg-red-500 px-5 py-3 font-bold text-white hover:bg-red-600"
           >
             Cerrar caja
@@ -1030,13 +1251,18 @@ function getProductMainImage(product: Product) {
                 className="w-full bg-transparent font-semibold text-zinc-950 outline-none"
               >
                 <option value="">Todas las categorias</option>
-                {productCategories.map((categoryName) => (
+                {categoryOptions.map((categoryName) => (
                   <option key={categoryName} value={categoryName}>{categoryName}</option>
                 ))}
               </select>
             </label>
           </div>
 
+          {productsLoading ? (
+            <p className="rounded-2xl border border-zinc-200 bg-white p-5 text-zinc-500 shadow-sm">Cargando productos...</p>
+          ) : filteredProducts.length === 0 ? (
+            <p className="rounded-2xl border border-zinc-200 bg-white p-5 text-zinc-500 shadow-sm">No se encontraron productos.</p>
+          ) : (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             {filteredProducts.map((product) => (
               <button
@@ -1080,6 +1306,7 @@ function getProductMainImage(product: Product) {
               </button>
             ))}
           </div>
+          )}
         </section>
 
         <aside className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
@@ -1636,6 +1863,121 @@ function getProductMainImage(product: Product) {
   )
 }
 
+function CloseRegisterModal({
+  summary,
+  amount,
+  error,
+  processing,
+  onAmountChange,
+  onCancel,
+  onCloseWithoutPrint,
+  onPrintAndClose,
+}: {
+  summary: CloseSummary | null
+  amount: string
+  error: string
+  processing: boolean
+  onAmountChange: (value: string) => void
+  onCancel: () => void
+  onCloseWithoutPrint: () => void
+  onPrintAndClose: () => void
+}) {
+  const counted = amount.trim() === '' ? NaN : Number(amount)
+  const isValidAmount = amount.trim() !== '' && Number.isFinite(counted) && counted >= 0
+  const expectedCash = summary?.expectedCash || 0
+  const difference = isValidAmount ? counted - expectedCash : 0
+  const statusLabel = !isValidAmount
+    ? 'Pendiente'
+    : Math.abs(difference) < 0.01
+      ? 'Cuadre correcto'
+      : difference > 0
+        ? 'Sobrante'
+        : 'Faltante'
+  const statusClass = !isValidAmount
+    ? 'text-zinc-500'
+    : Math.abs(difference) < 0.01
+      ? 'text-emerald-600'
+      : difference > 0
+        ? 'text-orange-600'
+        : 'text-red-600'
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/40 p-4">
+      <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-xl">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-black text-zinc-950">Cierre de caja</h2>
+            <p className="text-zinc-500">Verifica el resumen e ingresa el efectivo fisico contado.</p>
+          </div>
+          <span className={`rounded-full bg-zinc-50 px-3 py-1 text-sm font-black ${statusClass}`}>{statusLabel}</span>
+        </div>
+
+        <div className="mt-5 grid gap-3 rounded-2xl bg-zinc-50 p-4 md:grid-cols-2">
+          <BigRow label="Monto de apertura" value={summary?.openingAmount || 0} />
+          <BigRow label="Ventas en efectivo" value={summary?.cashSales || 0} />
+          <BigRow label="Transferencias" value={summary?.transferSales || 0} />
+          <BigRow label="Tarjetas" value={summary?.cardSales || 0} />
+          <BigRow label="Entradas manuales" value={summary?.manualIn || 0} />
+          <BigRow label="Salidas manuales" value={summary?.manualOut || 0} />
+          <BigRow label="Devoluciones en efectivo" value={summary?.cashRefunds || 0} />
+          <BigRow label="Efectivo esperado" value={expectedCash} />
+        </div>
+
+        <label className="mt-5 block">
+          <span className="mb-2 block text-sm font-bold text-zinc-700">Monto contado en caja</span>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={amount}
+            onChange={(e) => onAmountChange(e.target.value)}
+            placeholder="RD$0.00"
+            className="w-full rounded-2xl border border-zinc-300 px-4 py-4 text-2xl font-black outline-none focus:border-emerald-500"
+            autoFocus
+          />
+        </label>
+
+        <div className="mt-4 grid gap-3 rounded-2xl border border-zinc-200 p-4 md:grid-cols-2">
+          <BigRow label="Monto contado" value={isValidAmount ? counted : 0} />
+          <BigRow label="Diferencia" value={difference} />
+        </div>
+
+        {(error || !isValidAmount) && (
+          <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-800">
+            {error || 'Debes ingresar el monto contado antes de cerrar la caja.'}
+          </p>
+        )}
+
+        <div className="mt-5 grid gap-3 md:grid-cols-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={processing}
+            className="rounded-xl border border-zinc-300 py-3 font-bold hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={onCloseWithoutPrint}
+            disabled={!isValidAmount || processing}
+            className="rounded-xl border border-zinc-300 py-3 font-bold hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {processing ? 'Cerrando caja...' : 'Cerrar sin imprimir'}
+          </button>
+          <button
+            type="button"
+            onClick={onPrintAndClose}
+            disabled={!isValidAmount || processing}
+            className="rounded-xl bg-emerald-600 py-3 font-black text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {processing ? 'Cerrando caja...' : 'Imprimir cuadre y cerrar'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 function BigRow({ label, value }: { label: string; value: number }) {
   return (
     <div className="flex justify-between text-lg">
@@ -1660,7 +2002,11 @@ function CloseSummaryModal({
         <h2 className="text-center text-2xl font-bold">Caja cerrada</h2>
 
         <div className="mt-5 space-y-3 rounded-xl bg-zinc-50 p-4">
-          <BigRow label="Caja + ventas" value={summary.totalSales} />
+          <BigRow label="Efectivo esperado" value={summary.expectedCash} />
+          <BigRow label="Ventas efectivo" value={summary.cashSales} />
+          <BigRow label="Ventas tarjeta" value={summary.cardSales} />
+          <BigRow label="Ventas transferencia" value={summary.transferSales} />
+          <BigRow label="Devoluciones efectivo" value={summary.cashRefunds} />
           <BigRow label="Comisión tarjeta" value={summary.totalCardFee} />
           <BigRow label="Ganancia estimada" value={summary.totalProfit} />
           <BigRow label="Efectivo contado" value={summary.closingAmount} />

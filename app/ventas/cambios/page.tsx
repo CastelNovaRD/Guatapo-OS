@@ -82,7 +82,11 @@ export default function CambiosPage() {
   const [storeId, setStoreId] = useState<string | null>(null)
   const [sale, setSale] = useState<Sale | null>(null)
   const [saleItems, setSaleItems] = useState<SaleItem[]>([])
-  const [returnQuantities, setReturnQuantities] = useState<Record<string, number>>({})
+  const [returnRestockQuantities, setReturnRestockQuantities] = useState<Record<string, number>>({})
+  const [returnDamagedQuantities, setReturnDamagedQuantities] = useState<Record<string, number>>({})
+  const [exchangeReason, setExchangeReason] = useState('')
+  const [exchangeReasonOther, setExchangeReasonOther] = useState('')
+  const [exchangeNotes, setExchangeNotes] = useState('')
   const [products, setProducts] = useState<Product[]>([])
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([])
   const [productSearch, setProductSearch] = useState('')
@@ -134,7 +138,11 @@ export default function CambiosPage() {
     setLoading(true)
     setSale(null)
     setSaleItems([])
-    setReturnQuantities({})
+    setReturnRestockQuantities({})
+    setReturnDamagedQuantities({})
+    setExchangeReason('')
+    setExchangeReasonOther('')
+    setExchangeNotes('')
     setReplacements([])
     setLastPrintId(null)
 
@@ -207,7 +215,7 @@ export default function CambiosPage() {
   const isCashPayment = selectedPaymentName.includes('efectivo')
 
   const returnedTotal = saleItems.reduce((sum, item) => {
-    const qty = returnQuantities[item.id] || 0
+    const qty = getReturnedQuantity(item.id)
     if (qty <= 0) return sum
 
     return sum + itemUnitNet(item, sale) * qty
@@ -230,11 +238,29 @@ export default function CambiosPage() {
   const extraCardFee = difference > 0 ? difference * (Number(selectedPaymentMethod?.fee_percent || 0) / 100) : 0
   const cashChange = Number(cashReceived || 0) - Math.max(0, difference)
 
-  function changeReturnQuantity(item: SaleItem, amount: number) {
-    setReturnQuantities((current) => {
-      const nextValue = Math.max(0, Math.min(item.quantity, (current[item.id] || 0) + amount))
-      return { ...current, [item.id]: nextValue }
-    })
+  function getReturnedQuantity(itemId: string) {
+    return Number(returnRestockQuantities[itemId] || 0) + Number(returnDamagedQuantities[itemId] || 0)
+  }
+
+  function changeReturnQuantity(
+    item: SaleItem,
+    destination: 'restock' | 'damaged',
+    amount: number
+  ) {
+    const currentMap = destination === 'restock' ? returnRestockQuantities : returnDamagedQuantities
+    const otherQuantity =
+      destination === 'restock'
+        ? Number(returnDamagedQuantities[item.id] || 0)
+        : Number(returnRestockQuantities[item.id] || 0)
+    const currentQuantity = Number(currentMap[item.id] || 0)
+    const maxForDestination = Math.max(0, Number(item.quantity || 0) - otherQuantity)
+    const nextValue = Math.max(0, Math.min(maxForDestination, currentQuantity + amount))
+
+    if (destination === 'restock') {
+      setReturnRestockQuantities((current) => ({ ...current, [item.id]: nextValue }))
+    } else {
+      setReturnDamagedQuantities((current) => ({ ...current, [item.id]: nextValue }))
+    }
   }
 
   function addReplacement(product: Product) {
@@ -290,9 +316,17 @@ export default function CambiosPage() {
     if (!sale) return
     if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
 
-    const returnedItems = saleItems.filter((item) => (returnQuantities[item.id] || 0) > 0)
+    const returnedItems = saleItems.filter((item) => getReturnedQuantity(item.id) > 0)
     if (returnedItems.length === 0 && replacements.length === 0) {
       return alert('Selecciona articulos devueltos o agrega un producto nuevo')
+    }
+
+    if (returnedItems.length > 0 && !exchangeReason) {
+      return alert('Selecciona el motivo del cambio.')
+    }
+
+    if (exchangeReason === 'Otro' && !exchangeReasonOther.trim()) {
+      return alert('Escribe el motivo del cambio.')
     }
 
     for (const item of replacements) {
@@ -308,8 +342,34 @@ export default function CambiosPage() {
 
     setSaving(true)
 
+    let exchangeId: string | null = null
+    const { data: exchangeData, error: exchangeError } = await supabase
+      .from('product_exchanges')
+      .insert({
+        store_id: storeId,
+        sale_id: sale.id,
+        reason: exchangeReason || 'Cambio de producto',
+        reason_other: exchangeReasonOther.trim() || null,
+        notes: exchangeNotes.trim() || null,
+        returned_total: returnedTotal,
+        replacement_total: replacementTotal,
+        difference_total: difference,
+        payment_method_id: difference > 0 && !paymentMethodId.startsWith('virtual:')
+          ? paymentMethodId
+          : null,
+        status: 'completed',
+      })
+      .select('id')
+      .maybeSingle()
+
+    if (exchangeError) return finishWithError(exchangeError.message)
+
+    exchangeId = exchangeData?.id || null
+
     for (const item of returnedItems) {
-      const returnedQty = returnQuantities[item.id] || 0
+      const restockQty = Number(returnRestockQuantities[item.id] || 0)
+      const damagedQty = Number(returnDamagedQuantities[item.id] || 0)
+      const returnedQty = restockQty + damagedQty
       const remainingQty = item.quantity - returnedQty
       const discountPerUnit = Number(item.discount || 0) / Math.max(1, item.quantity)
       const nextDiscount = discountPerUnit * remainingQty
@@ -332,16 +392,63 @@ export default function CambiosPage() {
         if (error) return finishWithError(error.message)
       }
 
-      if (item.product_id) {
+      if (item.product_id && restockQty > 0) {
         const product = products.find((p) => p.id === item.product_id)
         const previousStock = Number(product?.stock || 0)
         const { error } = await supabase
           .from('products')
-          .update({ stock: previousStock + returnedQty })
+          .update({ stock: previousStock + restockQty })
           .eq('store_id', storeId)
           .eq('id', item.product_id)
 
         if (error) return finishWithError(error.message)
+
+        const { error: movementError } = await supabase.from('inventory_movements').insert({
+          store_id: storeId,
+          product_id: item.product_id,
+          movement_type: 'exchange_return_restock',
+          reference_type: 'exchange',
+          quantity: restockQty,
+          previous_stock: previousStock,
+          new_stock: previousStock + restockQty,
+          sale_id: sale.id,
+          exchange_id: exchangeId,
+          reason: exchangeReason,
+        })
+        if (movementError) return finishWithError(movementError.message)
+      }
+
+      if (item.product_id && damagedQty > 0) {
+        const product = products.find((p) => p.id === item.product_id)
+        const { error: damagedError } = await supabase.from('damaged_inventory').insert({
+          store_id: storeId,
+          product_id: item.product_id,
+          sale_id: sale.id,
+          exchange_id: exchangeId,
+          sale_item_id: item.id,
+          imei: item.imei || null,
+          quantity: damagedQty,
+          reason: exchangeReason,
+          reason_other: exchangeReasonOther.trim() || null,
+          notes: exchangeNotes.trim() || null,
+          original_stock: Number(product?.stock || 0),
+          status: 'damaged',
+        })
+        if (damagedError) return finishWithError(damagedError.message)
+
+        const { error: damagedMovementError } = await supabase.from('inventory_movements').insert({
+          store_id: storeId,
+          product_id: item.product_id,
+          movement_type: 'exchange_return_damaged',
+          reference_type: 'exchange',
+          quantity: damagedQty,
+          previous_stock: Number(product?.stock || 0),
+          new_stock: Number(product?.stock || 0),
+          sale_id: sale.id,
+          exchange_id: exchangeId,
+          reason: exchangeReason,
+        })
+        if (damagedMovementError) return finishWithError(damagedMovementError.message)
       }
     }
 
@@ -370,6 +477,20 @@ export default function CambiosPage() {
           .eq('id', item.id)
 
         if (stockError) return finishWithError(stockError.message)
+
+        const { error: outgoingMovementError } = await supabase.from('inventory_movements').insert({
+          store_id: storeId,
+          product_id: item.id,
+          movement_type: 'exchange_product_out',
+          reference_type: 'exchange',
+          quantity: item.quantity,
+          previous_stock: item.stock,
+          new_stock: item.stock - item.quantity,
+          sale_id: sale.id,
+          exchange_id: exchangeId,
+          reason: exchangeReason || 'Cambio de producto',
+        })
+        if (outgoingMovementError) return finishWithError(outgoingMovementError.message)
       }
     }
 
@@ -403,7 +524,9 @@ export default function CambiosPage() {
           : sale.payment_method_id,
         cash_received: Number(sale.cash_received || 0) + (difference > 0 && isCashPayment ? Number(cashReceived || 0) : 0),
         cash_change: Number(sale.cash_change || 0) + (difference > 0 && isCashPayment ? Math.max(0, cashChange) : 0),
-        notes: `Factura editada por cambio de articulos el ${new Date().toLocaleString('es-DO')}`,
+        notes: `Factura editada por cambio de articulos el ${new Date().toLocaleString('es-DO')}. Motivo: ${
+          exchangeReason === 'Otro' ? exchangeReasonOther.trim() : exchangeReason || 'Cambio de producto'
+        }`,
       })
       .eq('store_id', storeId)
       .eq('id', sale.id)
@@ -500,6 +623,40 @@ export default function CambiosPage() {
                 <p className="text-sm text-zinc-500">Marca la cantidad que el cliente devuelve.</p>
               </div>
 
+              <div className="grid gap-4 border-b border-zinc-200 p-5 md:grid-cols-2">
+                <label className="block text-sm font-semibold text-zinc-600">
+                  Motivo del cambio
+                  <select
+                    value={exchangeReason}
+                    onChange={(event) => setExchangeReason(event.target.value)}
+                    className="mt-2 w-full rounded-xl border border-zinc-300 bg-white px-3 py-3 text-base outline-none focus:border-emerald-500"
+                  >
+                    <option value="">Seleccionar motivo</option>
+                    <option value="Producto defectuoso">Producto defectuoso</option>
+                    <option value="Producto dañado">Producto dañado</option>
+                    <option value="No era compatible">No era compatible</option>
+                    <option value="No era lo que el cliente necesitaba">No era lo que el cliente necesitaba</option>
+                    <option value="Error en la venta">Error en la venta</option>
+                    <option value="Cambio por otro producto">Cambio por otro producto</option>
+                    <option value="Otro">Otro</option>
+                  </select>
+                </label>
+
+                <label className="block text-sm font-semibold text-zinc-600">
+                  Observaciones
+                  <input
+                    value={exchangeReason === 'Otro' ? exchangeReasonOther : exchangeNotes}
+                    onChange={(event) =>
+                      exchangeReason === 'Otro'
+                        ? setExchangeReasonOther(event.target.value)
+                        : setExchangeNotes(event.target.value)
+                    }
+                    placeholder={exchangeReason === 'Otro' ? 'Describe el motivo' : 'Nota opcional'}
+                    className="mt-2 w-full rounded-xl border border-zinc-300 px-3 py-3 text-base outline-none focus:border-emerald-500"
+                  />
+                </label>
+              </div>
+
               <div className="divide-y divide-zinc-100">
                 {saleItems.map((item) => (
                   <div key={item.id} className="p-5">
@@ -515,21 +672,19 @@ export default function CambiosPage() {
                       <div className="text-right">
                         <p className="font-bold">{formatMoney(item.total)}</p>
                         <p className="text-sm text-zinc-500">Devuelve</p>
-                        <div className="mt-1 flex items-center justify-end gap-2">
-                          <button
-                            onClick={() => changeReturnQuantity(item, -1)}
-                            className="rounded-lg bg-zinc-100 p-2 hover:bg-zinc-200"
-                          >
-                            <Minus size={15} />
-                          </button>
-                          <span className="w-8 text-center font-black">{returnQuantities[item.id] || 0}</span>
-                          <button
-                            onClick={() => changeReturnQuantity(item, 1)}
-                            className="rounded-lg bg-zinc-100 p-2 hover:bg-zinc-200"
-                          >
-                            <Plus size={15} />
-                          </button>
-                        </div>
+                        <ReturnQuantityControl
+                          label="Al inventario"
+                          value={returnRestockQuantities[item.id] || 0}
+                          onMinus={() => changeReturnQuantity(item, 'restock', -1)}
+                          onPlus={() => changeReturnQuantity(item, 'restock', 1)}
+                        />
+                        <ReturnQuantityControl
+                          label="Dañado"
+                          value={returnDamagedQuantities[item.id] || 0}
+                          danger
+                          onMinus={() => changeReturnQuantity(item, 'damaged', -1)}
+                          onPlus={() => changeReturnQuantity(item, 'damaged', 1)}
+                        />
                       </div>
                     </div>
                   </div>
@@ -721,6 +876,37 @@ function itemUnitNet(item: SaleItem, sale: Sale | null) {
 
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+}
+
+function ReturnQuantityControl({
+  label,
+  value,
+  danger = false,
+  onMinus,
+  onPlus,
+}: {
+  label: string
+  value: number
+  danger?: boolean
+  onMinus: () => void
+  onPlus: () => void
+}) {
+  return (
+    <div className="mt-2">
+      <p className={`text-xs font-bold ${danger ? 'text-red-600' : 'text-emerald-700'}`}>
+        {label}
+      </p>
+      <div className="mt-1 flex items-center justify-end gap-2">
+        <button onClick={onMinus} className="rounded-lg bg-zinc-100 p-2 hover:bg-zinc-200">
+          <Minus size={15} />
+        </button>
+        <span className="w-8 text-center font-black">{value}</span>
+        <button onClick={onPlus} className="rounded-lg bg-zinc-100 p-2 hover:bg-zinc-200">
+          <Plus size={15} />
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function MoneyRow({

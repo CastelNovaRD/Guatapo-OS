@@ -107,6 +107,7 @@ export default function CooperativasPage() {
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
   const [lastSale, setLastSale] = useState<LastSale | null>(null)
+  const [visibleProductsLimit, setVisibleProductsLimit] = useState(10)
 
   const searchRef = useRef<HTMLInputElement>(null)
 
@@ -138,6 +139,12 @@ export default function CooperativasPage() {
       .eq('store_id', currentStoreId)
       .order('sort_order')
 
+    const { data: storeSettings } = await supabase
+      .from('stores')
+      .select('cooperative_pos_products_limit')
+      .eq('id', currentStoreId)
+      .maybeSingle()
+
     const { data: commissionsData } = await supabase
       .from('cooperative_commissions')
       .select('cooperative_name, commission_percent, active')
@@ -146,6 +153,8 @@ export default function CooperativasPage() {
 
     if (productsError) alert('Error cargando productos cooperativos: ' + productsError.message)
 
+    const configuredLimit = Number((storeSettings as { cooperative_pos_products_limit?: number } | null)?.cooperative_pos_products_limit || 10)
+    setVisibleProductsLimit([5, 10, 20, 50].includes(configuredLimit) ? configuredLimit : 10)
     setProducts(productsData || [])
     setProductImages(imagesData || [])
     setCooperativeCommissions(commissionsData || [])
@@ -162,11 +171,13 @@ export default function CooperativasPage() {
   const filteredProducts = useMemo(() => {
     const query = search.toLowerCase().trim()
 
-    return products.filter((product) => {
+    const matches = products.filter((product) => {
       const text = `${product.name} ${product.sku || ''} ${product.barcode || ''}`.toLowerCase()
       return query ? text.includes(query) : true
     })
-  }, [products, search])
+
+    return query ? matches : matches.slice(0, visibleProductsLimit)
+  }, [products, search, visibleProductsLimit])
 
   const selectedCooperative =
     cooperative === 'custom' ? customCooperative.trim() : cooperative

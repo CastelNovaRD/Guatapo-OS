@@ -1,9 +1,10 @@
-'use client'
+﻿'use client'
 
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { formatDate, formatTime, formatMoney } from '@/lib/format'
+import { calculateCashRegisterTotals } from '@/lib/cash-register'
 
 type CashRegister = {
   id: string
@@ -20,6 +21,7 @@ type CashRegister = {
 }
 
 type SalePayment = {
+  id: string
   total: number
   card_fee: number | null
   cash_received: number | null
@@ -41,12 +43,67 @@ export default function CashRegisterPrint() {
     cash: 0,
     card: 0,
     transfer: 0,
+    cashRefunds: 0,
+    expectedCash: 0,
   })
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    loadCash()
-  }, [])
+  async function loadPaymentBreakdown(register: CashRegister) {
+    const { data: salesData, error: salesError } = await supabase
+      .from('sales')
+      .select('id, total, card_fee, cash_received, cash_change, payment_method_id')
+      .eq('cash_register_id', register.id)
+
+    if (salesError) {
+      alert('Error cargando desglose de pagos: ' + salesError.message)
+      return
+    }
+
+    const sales = (salesData || []) as SalePayment[]
+    const saleIds = sales.map((sale) => sale.id)
+    const methodIds = Array.from(
+      new Set(sales.map((sale) => sale.payment_method_id).filter(Boolean))
+    ) as string[]
+    const methodMap = new Map<string, string>()
+
+    if (methodIds.length > 0) {
+      const { data: methodsData } = await supabase
+        .from('payment_methods')
+        .select('id, name')
+        .in('id', methodIds)
+
+      ;((methodsData || []) as PaymentMethod[]).forEach((method) => {
+        methodMap.set(method.id, method.name.toLowerCase())
+      })
+    }
+
+    let refunds: { total: number; refund_method: string | null }[] = []
+
+    if (saleIds.length > 0) {
+      const { data: refundRows } = await supabase
+        .from('credit_notes')
+        .select('total, refund_method')
+        .in('sale_id', saleIds)
+
+      refunds = refundRows || []
+    }
+
+    const totals = calculateCashRegisterTotals({
+      openingAmount: Number(register.opening_amount || 0),
+      countedCash: Number(register.closing_amount || 0),
+      sales,
+      refunds,
+      paymentMethods: methodMap,
+    })
+
+    setPaymentBreakdown({
+      cash: totals.cashSales,
+      card: totals.cardSales,
+      transfer: totals.transferSales,
+      cashRefunds: totals.cashRefunds,
+      expectedCash: totals.expectedCash,
+    })
+  }
 
   async function loadCash() {
     setLoading(true)
@@ -68,69 +125,16 @@ export default function CashRegisterPrint() {
     setLoading(false)
   }
 
-  async function loadPaymentBreakdown(register: CashRegister) {
-    const { data: salesData, error: salesError } = await supabase
-      .from('sales')
-      .select('total, card_fee, cash_received, cash_change, payment_method_id')
-      .eq('cash_register_id', register.id)
-
-    if (salesError) {
-      alert('Error cargando desglose de pagos: ' + salesError.message)
-      return
-    }
-
-    const sales = (salesData || []) as SalePayment[]
-    const methodIds = Array.from(
-      new Set(sales.map((sale) => sale.payment_method_id).filter(Boolean))
-    ) as string[]
-    const methodMap = new Map<string, string>()
-
-    if (methodIds.length > 0) {
-      const { data: methodsData } = await supabase
-        .from('payment_methods')
-        .select('id, name')
-        .in('id', methodIds)
-
-      ;((methodsData || []) as PaymentMethod[]).forEach((method) => {
-        methodMap.set(method.id, method.name.toLowerCase())
-      })
-    }
-
-    const totals = sales.reduce(
-      (sum, sale) => {
-        const methodName = sale.payment_method_id
-          ? methodMap.get(sale.payment_method_id) || ''
-          : ''
-        const total = Number(sale.total || 0)
-        const cardFee = Number(sale.card_fee || 0)
-        const cashReceived = Number(sale.cash_received || 0)
-        const cashChange = Number(sale.cash_change || 0)
-
-        if (cashReceived > 0 || methodName.includes('efectivo')) {
-          sum.cash += Math.max(0, cashReceived - cashChange)
-          return sum
-        }
-
-        if (cardFee > 0 || methodName.includes('tarjeta')) {
-          sum.card += Math.max(0, total - cardFee)
-          return sum
-        }
-
-        sum.transfer += Math.max(0, total - cardFee)
-        return sum
-      },
-      { cash: 0, card: 0, transfer: 0 }
-    )
-
-    setPaymentBreakdown(totals)
-  }
+  useEffect(() => {
+    void Promise.resolve().then(loadCash)
+  }, [])
 
   if (loading) {
     return <main className="p-6">Cargando cuadre...</main>
   }
 
   if (!cash) {
-    return <main className="p-6">No se encontró el cuadre.</main>
+    return <main className="p-6">No se encontrÃ³ el cuadre.</main>
   }
 
   return (
@@ -165,20 +169,22 @@ export default function CashRegisterPrint() {
 
         <div>
           <Row label="Efectivo inicial" value={formatMoney(cash.opening_amount)} />
-          <Row label="Caja + ventas" value={formatMoney(cash.total_sales)} />
+          <Row label="Efectivo esperado" value={formatMoney(cash.total_sales)} />
           <Row label="Ventas efectivo" value={formatMoney(paymentBreakdown.cash)} />
           <Row label="Ventas tarjeta" value={formatMoney(paymentBreakdown.card)} />
           <Row label="Ventas transferencia" value={formatMoney(paymentBreakdown.transfer)} />
-          <Row label="Comisión tarjeta" value={formatMoney(cash.total_card_fee)} />
+          <Row label="Devoluciones efectivo" value={formatMoney(paymentBreakdown.cashRefunds)} />
+          <Row label="ComisiÃ³n tarjeta" value={formatMoney(cash.total_card_fee)} />
           <Row label="Ganancia estimada" value={formatMoney(cash.total_profit)} />
           <Row label="Efectivo contado" value={formatMoney(cash.closing_amount || 0)} />
           <Row label="Descuadre" value={formatMoney(cash.difference)} />
+          <Row label="Resultado" value={Math.abs(Number(cash.difference || 0)) < 0.01 ? 'Cuadrado' : Number(cash.difference || 0) > 0 ? 'Sobrante' : 'Faltante'} />
         </div>
 
         <Divider />
 
         <div className="text-center">
-          <p className="font-bold">Firma / Validación</p>
+          <p className="font-bold">Firma / ValidaciÃ³n</p>
           <div className="mx-auto mt-8 w-48 border-t border-black" />
           <p className="mt-2">Cajero</p>
         </div>

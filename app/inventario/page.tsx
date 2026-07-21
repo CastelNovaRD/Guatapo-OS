@@ -48,6 +48,7 @@ type Product = {
   slug: string | null
   full_description: string | null
   specs: any
+  updated_at?: string | null
 }
 
 type Category = {
@@ -58,6 +59,22 @@ type Category = {
 type ProductTypeOption = {
   value: string
   label: string
+}
+
+type InventorySummary = {
+  active_count: number
+  inventory_value: number
+  inventory_sale_value: number
+  low_stock_count: number
+  out_of_stock_count: number
+}
+
+const emptyInventorySummary: InventorySummary = {
+  active_count: 0,
+  inventory_value: 0,
+  inventory_sale_value: 0,
+  low_stock_count: 0,
+  out_of_stock_count: 0,
 }
 
 const DEFAULT_PRODUCT_TYPES: ProductTypeOption[] = [
@@ -89,6 +106,23 @@ type ProductImage = {
   image_url: string
   is_primary: boolean
   sort_order: number
+}
+
+type DamagedInventoryItem = {
+  id: string
+  product_id: string
+  sale_id: string | null
+  credit_note_id: string | null
+  imei: string | null
+  quantity: number
+  reason: string
+  notes: string | null
+  status: string
+  created_at: string
+  products?: {
+    name: string
+    sku: string | null
+  } | null
 }
 
 type ProductForm = {
@@ -193,6 +227,7 @@ export default function InventarioPage() {
   const [categories, setCategories] = useState<Category[]>([])
   const [productTypes, setProductTypes] = useState<ProductTypeOption[]>([])
   const [productImages, setProductImages] = useState<ProductImage[]>([])
+  const [damagedInventory, setDamagedInventory] = useState<DamagedInventoryItem[]>([])
   const [movements, setMovements] = useState<Movement[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -205,6 +240,12 @@ export default function InventarioPage() {
   const [exportFormat, setExportFormat] = useState<ExportFormat>('excel')
   const [exportScope, setExportScope] = useState<InventoryExportScope>('all')
   const [exportCategory, setExportCategory] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [inventoryPage, setInventoryPage] = useState(1)
+  const [productsPerPage, setProductsPerPage] = useState(20)
+  const [totalProducts, setTotalProducts] = useState(0)
+  const [inventoryError, setInventoryError] = useState('')
+  const [inventorySummary, setInventorySummary] = useState<InventorySummary>(emptyInventorySummary)
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editingProduct, setEditingProduct] = useState<Product | null>(null)
@@ -231,6 +272,19 @@ function getProductMainImage(product: Product) {
     loadData()
   }, [])
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 350)
+    return () => window.clearTimeout(timer)
+  }, [search])
+
+  useEffect(() => {
+    setInventoryPage(1)
+  }, [debouncedSearch, categoryFilter, activeFilter, stockFilter, stockMinFilter, stockMaxFilter, productsPerPage])
+
+  useEffect(() => {
+    if (storeId) void loadProductsPage(storeId)
+  }, [storeId, inventoryPage, productsPerPage, debouncedSearch, categoryFilter, activeFilter, stockFilter, stockMinFilter, stockMaxFilter])
+
   async function loadData() {
     setLoading(true)
     const currentStoreId = await getCurrentStoreId()
@@ -241,72 +295,110 @@ function getProductMainImage(product: Product) {
       return alert('Este usuario no tiene una tienda asignada.')
     }
 
-    const { data: productsData, error: productsError } = await supabase
-      .from('products')
-      .select('id, name, sku, barcode, image_url, cost, sale_price, coop_price, stock, product_type, category, active, show_on_website, web_visibility, featured, short_description, slug, full_description, specs')
-      .eq('store_id', currentStoreId)
-      .order('created_at', { ascending: false })
+    const [
+      { data: categoriesData },
+      { data: productTypesData },
+      { data: damagedData },
+    ] = await Promise.all([
+      supabase
+        .from('categories')
+        .select('id, name')
+        .eq('store_id', currentStoreId)
+        .eq('active', true)
+        .order('name'),
+      supabase
+        .from('product_types')
+        .select('value, label')
+        .eq('store_id', currentStoreId)
+        .eq('active', true)
+        .order('label'),
+      supabase
+        .from('damaged_inventory')
+        .select('id, product_id, sale_id, credit_note_id, imei, quantity, reason, notes, status, created_at, products(name, sku)')
+        .eq('store_id', currentStoreId)
+        .neq('status', 'restored')
+        .order('created_at', { ascending: false }),
+    ])
 
-    const { data: categoriesData } = await supabase
-      .from('categories')
-      .select('id, name')
-      .eq('store_id', currentStoreId)
-      .eq('active', true)
-      .order('name')
+    const { data: summaryData } = await supabase.rpc('get_inventory_summary', { p_store_id: currentStoreId })
+    const summaryRow = Array.isArray(summaryData) ? summaryData[0] : summaryData
 
-    const { data: productTypesData } = await supabase
-      .from('product_types')
-      .select('value, label')
-      .eq('store_id', currentStoreId)
-      .eq('active', true)
-      .order('label')
-
-    const { data: imagesData } = await supabase
-     .from('product_images')
-     .select('id, product_id, image_url, is_primary, sort_order')
-     .eq('store_id', currentStoreId)
-     .order('sort_order')
-
-    if (productsError) alert('Error cargando inventario: ' + productsError.message)
-
-    setProducts(productsData || [])
     setCategories(categoriesData || [])
     setProductTypes(productTypesData || [])
-    setProductImages(imagesData || [])
+    setDamagedInventory((damagedData || []) as unknown as DamagedInventoryItem[])
+    setInventorySummary({
+      active_count: Number(summaryRow?.active_count || 0),
+      inventory_value: Number(summaryRow?.inventory_value || 0),
+      inventory_sale_value: Number(summaryRow?.inventory_sale_value || 0),
+      low_stock_count: Number(summaryRow?.low_stock_count || 0),
+      out_of_stock_count: Number(summaryRow?.out_of_stock_count || 0),
+    })
     setLoading(false)
   }
 
-  const filteredProducts = useMemo(() => {
-    const q = search.toLowerCase().trim()
+  async function loadProductsPage(currentStoreId = storeId) {
+    if (!currentStoreId) return
 
-    const filtered = products.filter((product) => {
-      const text = `${product.name} ${product.sku || ''} ${product.barcode || ''} ${product.category || ''}`.toLowerCase()
+    setLoading(true)
+    setInventoryError('')
 
-      const matchSearch = q ? text.includes(q) : true
-      const matchCategory = categoryFilter ? product.category === categoryFilter : true
-      const matchActive =
-        activeFilter === 'active'
-          ? product.active !== false
-          : activeFilter === 'inactive'
-            ? product.active === false
-            : true
-      const stock = Number(product.stock || 0)
-      const matchStock =
-        stockFilter === 'low'
-          ? stock > 0 && stock <= 2
-          : stockFilter === 'out'
-            ? stock <= 0
-            : true
-      const minStock = stockMinFilter === '' ? null : Number(stockMinFilter)
-      const maxStock = stockMaxFilter === '' ? null : Number(stockMaxFilter)
-      const matchMinStock = minStock === null || stock >= minStock
-      const matchMaxStock = maxStock === null || stock <= maxStock
+    const from = (inventoryPage - 1) * productsPerPage
+    const to = from + productsPerPage - 1
+    const cleanSearch = debouncedSearch.replace(/[%_]/g, '').trim()
 
-      return matchSearch && matchCategory && matchActive && matchStock && matchMinStock && matchMaxStock
-    })
+    let query = supabase
+      .from('products')
+      .select('id, name, sku, barcode, image_url, cost, sale_price, coop_price, stock, product_type, category, active, show_on_website, web_visibility, featured, short_description, slug, full_description, specs, updated_at', { count: 'exact' })
+      .eq('store_id', currentStoreId)
 
-    return filtered
-  }, [products, search, categoryFilter, activeFilter, stockFilter, stockMinFilter, stockMaxFilter])
+    if (cleanSearch) {
+      query = query.or(`name.ilike.%${cleanSearch}%,sku.ilike.%${cleanSearch}%,barcode.ilike.%${cleanSearch}%,category.ilike.%${cleanSearch}%`)
+    }
+
+    if (categoryFilter) query = query.eq('category', categoryFilter)
+    if (activeFilter === 'active') query = query.neq('active', false)
+    if (activeFilter === 'inactive') query = query.eq('active', false)
+    if (stockFilter === 'low') query = query.gt('stock', 0).lte('stock', 2)
+    if (stockFilter === 'out') query = query.lte('stock', 0)
+    if (stockMinFilter !== '') query = query.gte('stock', Number(stockMinFilter))
+    if (stockMaxFilter !== '') query = query.lte('stock', Number(stockMaxFilter))
+
+    const { data, error, count } = await query
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (error) {
+      setProducts([])
+      setProductImages([])
+      setTotalProducts(0)
+      setInventoryError('Error cargando inventario: ' + error.message)
+      setLoading(false)
+      return
+    }
+
+    const pageProducts = data || []
+    setProducts(pageProducts)
+    setTotalProducts(count || 0)
+
+    const productIds = pageProducts.map((product) => product.id)
+
+    if (productIds.length > 0) {
+      const { data: imagesData } = await supabase
+        .from('product_images')
+        .select('id, product_id, image_url, is_primary, sort_order')
+        .eq('store_id', currentStoreId)
+        .in('product_id', productIds)
+        .order('sort_order')
+
+      setProductImages(imagesData || [])
+    } else {
+      setProductImages([])
+    }
+
+    setLoading(false)
+  }
+
+  const filteredProducts = products
 
   const allCategoryNames = useMemo(() => {
     const names = new Set<string>()
@@ -337,6 +429,14 @@ function getProductMainImage(product: Product) {
     return Array.from(options.entries()).map(([value, label]) => ({ value, label }))
   }, [productTypes, products])
 
+  const damagedByProduct = useMemo(() => {
+    const totals = new Map<string, number>()
+    damagedInventory.forEach((item) => {
+      totals.set(item.product_id, (totals.get(item.product_id) || 0) + Number(item.quantity || 0))
+    })
+    return totals
+  }, [damagedInventory])
+
   const activeProducts = products.filter((p) => p.active !== false)
   const inventoryValue = activeProducts.reduce(
     (sum, p) => sum + Number(p.cost || 0) * Number(p.stock || 0),
@@ -348,6 +448,10 @@ function getProductMainImage(product: Product) {
   )
   const lowStock = activeProducts.filter((p) => p.stock > 0 && p.stock <= 2)
   const outOfStock = activeProducts.filter((p) => p.stock <= 0)
+  const damagedQuantity = damagedInventory.reduce((sum, item) => sum + Number(item.quantity || 0), 0)
+  const totalPages = Math.max(1, Math.ceil(totalProducts / productsPerPage))
+  const firstVisibleProduct = totalProducts === 0 ? 0 : (inventoryPage - 1) * productsPerPage + 1
+  const lastVisibleProduct = Math.min(totalProducts, inventoryPage * productsPerPage)
 
   function openNewProduct() {
     setEditingProduct(null)
@@ -697,6 +801,35 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
     setMovements(data || [])
   }
 
+  async function restoreDamagedItem(item: DamagedInventoryItem) {
+    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
+
+    const quantityInput = window.prompt(
+      `Cantidad a reintegrar de "${item.products?.name || 'producto'}" (máximo ${item.quantity})`,
+      String(item.quantity)
+    )
+    if (quantityInput === null) return
+
+    const quantity = Number(quantityInput || 0)
+    if (!quantity || quantity <= 0) return alert('La cantidad debe ser mayor a cero.')
+    if (quantity > Number(item.quantity || 0)) return alert('No puedes reintegrar más unidades de las dañadas.')
+
+    const notes = window.prompt('Observación para la reintegración')
+    if (notes === null) return
+    if (!confirm('¿Seguro que quieres reintegrar este producto al inventario disponible?')) return
+
+    const { error } = await supabase.rpc('restore_damaged_inventory', {
+      p_store_id: storeId,
+      p_damaged_inventory_id: item.id,
+      p_quantity: quantity,
+      p_notes: notes || null,
+    })
+
+    if (error) return alert('No pude reintegrar el producto: ' + error.message)
+
+    await loadData()
+  }
+
   return (
     <AppShell>
       <div className="mb-8 flex items-start justify-between gap-4">
@@ -730,28 +863,33 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
         </div>
       </div>
 
-      <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-5">
-        <StatCard title="Valor inventario" value={formatMoney(inventoryValue)} compactValue />
-        <StatCard title="Valor de venta" value={formatMoney(inventorySaleValue)} compactValue />
+      <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3 xl:grid-cols-6">
+        <StatCard title="Valor inventario" value={formatMoney(inventorySummary.inventory_value)} compactValue />
+        <StatCard title="Valor de venta" value={formatMoney(inventorySummary.inventory_sale_value)} compactValue />
         <StatCard
           title="Productos activos"
-          value={String(activeProducts.length)}
+          value={String(inventorySummary.active_count)}
           active={stockFilter === 'all'}
           onClick={() => setStockFilter('all')}
         />
         <StatCard
           title="Stock bajo"
-          value={String(lowStock.length)}
+          value={String(inventorySummary.low_stock_count)}
           orange
           active={stockFilter === 'low'}
           onClick={() => setStockFilter(stockFilter === 'low' ? 'all' : 'low')}
         />
         <StatCard
           title="Agotados"
-          value={String(outOfStock.length)}
+          value={String(inventorySummary.out_of_stock_count)}
           red
           active={stockFilter === 'out'}
           onClick={() => setStockFilter(stockFilter === 'out' ? 'all' : 'out')}
+        />
+        <StatCard
+          title="Productos dañados"
+          value={String(damagedQuantity)}
+          red
         />
       </div>
 
@@ -821,104 +959,205 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
       </div>
 
       <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm">
-        <div className="flex items-center justify-between border-b border-zinc-200 p-5">
-          <h2 className="text-xl font-semibold">Productos en inventario</h2>
-          <p className="text-sm text-zinc-500">
-            Mostrando {filteredProducts.length} de {products.length}
-            {stockFilter === 'low' && ' · Filtro: stock bajo'}
-            {stockFilter === 'out' && ' · Filtro: agotados'}
-          </p>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 p-5">
+          <div>
+            <h2 className="text-xl font-semibold">Productos en inventario</h2>
+            <p className="text-sm text-zinc-500">
+              Mostrando {firstVisibleProduct}-{lastVisibleProduct} de {totalProducts} productos
+              {stockFilter === 'low' && ' · Filtro: stock bajo'}
+              {stockFilter === 'out' && ' · Filtro: agotados'}
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-sm font-semibold text-zinc-600">
+            Productos por pagina
+            <select
+              value={productsPerPage}
+              onChange={(e) => setProductsPerPage(Number(e.target.value))}
+              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-zinc-950 outline-none focus:border-emerald-500"
+            >
+              {[10, 20, 50, 100].map((size) => (
+                <option key={size} value={size}>{size}</option>
+              ))}
+            </select>
+          </label>
         </div>
 
-        {loading ? (
-          <p className="p-5 text-zinc-500">Cargando inventario...</p>
+        {inventoryError ? (
+          <p className="m-5 rounded-xl border border-red-200 bg-red-50 p-4 font-semibold text-red-700">{inventoryError}</p>
+        ) : loading ? (
+          <p className="p-5 text-zinc-500">Cargando productos...</p>
         ) : filteredProducts.length === 0 ? (
           <p className="p-5 text-zinc-500">No se encontraron productos.</p>
         ) : (
-          <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2 xl:grid-cols-4">
-            {filteredProducts.map((product) => {
-              const isActive = product.active !== false
-              const value = Number(product.cost || 0) * Number(product.stock || 0)
+          <div className="overflow-x-auto">
+            <table className="min-w-[1120px] w-full text-left text-sm">
+              <thead className="sticky top-0 z-10 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
+                <tr className="border-b border-zinc-200">
+                  <th className="w-10 p-3"><span className="sr-only">Seleccion</span></th>
+                  <th className="p-3">Imagen</th>
+                  <th className="p-3">Producto</th>
+                  <th className="p-3">SKU</th>
+                  <th className="p-3">Categoria</th>
+                  <th className="p-3 text-right">Costo</th>
+                  <th className="p-3 text-right">Precio venta</th>
+                  <th className="p-3 text-center">Stock</th>
+                  <th className="p-3 text-center">Danado</th>
+                  <th className="p-3">Estado</th>
+                  <th className="p-3">Actualizado</th>
+                  <th className="p-3 text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredProducts.map((product) => {
+                  const isActive = product.active !== false
+                  const stock = Number(product.stock || 0)
+                  const damagedStock = damagedByProduct.get(product.id) || 0
+                  const statusLabel = !isActive ? 'Inactivo' : stock <= 0 ? 'Agotado' : stock <= 2 ? 'Stock bajo' : 'Disponible'
+                  const statusClass = !isActive
+                    ? 'bg-zinc-100 text-zinc-600'
+                    : stock <= 0
+                      ? 'bg-red-50 text-red-700'
+                      : stock <= 2
+                        ? 'bg-orange-50 text-orange-700'
+                        : 'bg-emerald-50 text-emerald-700'
 
-              return (
-                <div
-                  key={product.id}
-                  className={`overflow-hidden rounded-2xl border bg-white shadow-sm ${
-                    isActive ? 'border-zinc-200' : 'border-zinc-300 opacity-70'
-                  }`}
-                >
-                  <div className="flex h-36 items-center justify-center bg-zinc-100">
-                    {getProductMainImage(product) ? (
-                      <img
-                        src={getProductMainImage(product) || ''}
-                        alt={product.name}
-                        className="h-full w-full object-contain p-3"
-                      />
-                    ) : (
-                      <ImageIcon className="text-zinc-300" size={45} />
-                    )}
-                  </div>
-
-                  <div className="p-4">
-                    <div className="mb-3 flex items-start justify-between gap-2">
-                      <div>
-                        <h3 className="line-clamp-2 text-base font-bold">{product.name}</h3>
-                        <p className="text-xs text-zinc-500">SKU: {product.sku || '-'}</p>
-                      </div>
-
-                      {isActive ? (
-                        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
-                          ACTIVO
-                        </span>
-                      ) : (
-                        <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-[11px] font-bold text-zinc-600">
-                          INACTIVO
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      <Info label="Categoría" value={product.category || '-'} />
-                      <Info
-                        label="Stock"
-                        value={String(product.stock)}
-                        orange={product.stock > 0 && product.stock <= 2}
-                        red={product.stock <= 0}
-                      />
-                      <Info label="Costo" value={formatMoney(product.cost)} />
-                      <Info label="Venta" value={formatMoney(product.sale_price)} green />
-                      <Info label="Coop." value={formatMoney(product.coop_price || 0)} green />
-                      <Info label="Valor" value={formatMoney(value)} green />
-                    </div>
-
-                    <div className="mt-4 flex flex-wrap justify-end gap-2">
-                      <IconButton title="Editar" onClick={() => openEditProduct(product)}>
-                        <Edit size={17} />
-                      </IconButton>
-
-                      <IconButton title="Kardex" onClick={() => openKardex(product)}>
-                        <History size={17} />
-                      </IconButton>
-
-                      <IconButton title="Ajustar stock" onClick={() => openStockModal(product)}>
-                        <Archive size={17} />
-                      </IconButton>
-
-                      <IconButton title={isActive ? 'Desactivar' : 'Activar'} onClick={() => toggleProductActive(product)}>
-                        {isActive ? <EyeOff size={17} /> : <Eye size={17} />}
-                      </IconButton>
-
-                      <IconButton title="Eliminar" danger onClick={() => deleteProduct(product)}>
-                        <Trash2 size={17} />
-                      </IconButton>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
+                  return (
+                    <tr key={product.id} className="border-b border-zinc-100 align-middle hover:bg-zinc-50">
+                      <td className="p-3">
+                        <input type="checkbox" className="h-4 w-4 rounded border-zinc-300 text-emerald-600" aria-label={`Seleccionar ${product.name}`} />
+                      </td>
+                      <td className="p-3">
+                        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-zinc-100">
+                          {getProductMainImage(product) ? (
+                            <img src={getProductMainImage(product) || ''} alt={product.name} className="h-full w-full object-contain p-1.5" />
+                          ) : (
+                            <ImageIcon className="text-zinc-300" size={24} />
+                          )}
+                        </div>
+                      </td>
+                      <td className="max-w-[260px] p-3">
+                        <p className="font-bold text-zinc-950 line-clamp-2">{product.name}</p>
+                        <p className="text-xs text-zinc-500">{product.product_type || 'normal'}</p>
+                      </td>
+                      <td className="p-3 font-mono text-xs text-zinc-600">{product.sku || '-'}</td>
+                      <td className="p-3 text-zinc-700">{product.category || '-'}</td>
+                      <td className="p-3 text-right font-semibold">{formatMoney(product.cost)}</td>
+                      <td className="p-3 text-right font-bold text-emerald-700">{formatMoney(product.sale_price)}</td>
+                      <td className="p-3 text-center">
+                        <span className={`font-black ${stock <= 0 ? 'text-red-600' : stock <= 2 ? 'text-orange-500' : 'text-zinc-950'}`}>{stock}</span>
+                      </td>
+                      <td className="p-3 text-center">
+                        <span className={damagedStock > 0 ? 'font-black text-red-600' : 'text-zinc-400'}>{damagedStock || '-'}</span>
+                      </td>
+                      <td className="p-3">
+                        <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${statusClass}`}>{statusLabel}</span>
+                      </td>
+                      <td className="p-3 text-xs text-zinc-500">{product.updated_at ? formatDateTime(product.updated_at) : '-'}</td>
+                      <td className="p-3">
+                        <div className="flex justify-end gap-2">
+                          <IconButton title="Editar" onClick={() => openEditProduct(product)}><Edit size={16} /></IconButton>
+                          <IconButton title="Kardex" onClick={() => openKardex(product)}><History size={16} /></IconButton>
+                          <IconButton title="Ajustar stock" onClick={() => openStockModal(product)}><Archive size={16} /></IconButton>
+                          <IconButton title={isActive ? 'Desactivar' : 'Activar'} onClick={() => toggleProductActive(product)}>{isActive ? <EyeOff size={16} /> : <Eye size={16} />}</IconButton>
+                          <IconButton title="Eliminar" danger onClick={() => deleteProduct(product)}><Trash2 size={16} /></IconButton>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         )}
+
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200 p-4 text-sm text-zinc-600">
+          <span>Pagina {inventoryPage} de {totalPages}</span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setInventoryPage((page) => Math.max(1, page - 1))}
+              disabled={inventoryPage <= 1 || loading}
+              className="rounded-xl border border-zinc-200 px-4 py-2 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Anterior
+            </button>
+            <button
+              type="button"
+              onClick={() => setInventoryPage((page) => Math.min(totalPages, page + 1))}
+              disabled={inventoryPage >= totalPages || loading}
+              className="rounded-xl border border-zinc-200 px-4 py-2 font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Siguiente
+            </button>
+          </div>
+        </div>
       </div>
+
+      <section className="mt-6 rounded-2xl border border-zinc-200 bg-white shadow-sm">
+        <div className="flex items-center justify-between border-b border-zinc-200 p-5">
+          <div>
+            <h2 className="text-xl font-semibold">Productos dañados</h2>
+            <p className="text-sm text-zinc-500">Cantidades separadas del stock disponible.</p>
+          </div>
+          <span className="rounded-full bg-red-50 px-3 py-1 text-sm font-bold text-red-700">
+            {damagedQuantity} unidades
+          </span>
+        </div>
+
+        {damagedInventory.length === 0 ? (
+          <p className="p-5 text-zinc-500">No hay productos dañados registrados.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead className="text-sm text-zinc-500">
+                <tr className="border-b border-zinc-200">
+                  <th className="p-4">Producto</th>
+                  <th className="p-4">SKU</th>
+                  <th className="p-4">IMEI/Serial</th>
+                  <th className="p-4">Cantidad dañada</th>
+                  <th className="p-4">Motivo</th>
+                  <th className="p-4">Venta / Nota</th>
+                  <th className="p-4">Fecha</th>
+                  <th className="p-4">Estado</th>
+                  <th className="p-4 text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {damagedInventory.map((item) => (
+                  <tr key={item.id} className="border-b border-zinc-100">
+                    <td className="p-4 font-semibold">{item.products?.name || 'Producto'}</td>
+                    <td className="p-4">{item.products?.sku || '-'}</td>
+                    <td className="p-4">{item.imei || '-'}</td>
+                    <td className="p-4 font-black text-red-600">{item.quantity}</td>
+                    <td className="p-4">
+                      <p className="font-semibold">{item.reason}</p>
+                      {item.notes && <p className="text-sm text-zinc-500">{item.notes}</p>}
+                    </td>
+                    <td className="p-4 text-sm">
+                      <p>Venta: {item.sale_id ? item.sale_id.slice(0, 8).toUpperCase() : '-'}</p>
+                      <p>Nota: {item.credit_note_id ? item.credit_note_id.slice(0, 8).toUpperCase() : '-'}</p>
+                    </td>
+                    <td className="p-4">{formatDateTime(item.created_at)}</td>
+                    <td className="p-4">
+                      <span className="rounded-full bg-orange-50 px-3 py-1 text-sm font-bold text-orange-700">
+                        {damagedStatusLabel(item.status)}
+                      </span>
+                    </td>
+                    <td className="p-4 text-right">
+                      <button
+                        onClick={() => restoreDamagedItem(item)}
+                        className="rounded-xl border border-emerald-300 px-4 py-2 text-sm font-bold text-emerald-700 hover:bg-emerald-50"
+                      >
+                        Reintegrar al inventario
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -1333,9 +1572,28 @@ function movementLabel(type: string) {
     adjustment: 'Ajuste',
     return: 'Devolución',
     service: 'Servicio',
+    return_restock: 'Devolución a inventario',
+    return_damaged: 'Devolución dañada',
+    damaged_restored: 'Dañado reintegrado',
+    exchange_return_restock: 'Cambio a inventario',
+    exchange_return_damaged: 'Cambio dañado',
+    exchange_product_out: 'Producto de cambio',
   }
 
   return labels[type] || type
+}
+
+function damagedStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    pending_review: 'Pendiente de revisión',
+    defective: 'Defectuoso',
+    repaired: 'Reparado',
+    returned_to_supplier: 'Devuelto al proveedor',
+    discarded: 'Descartado',
+    restored: 'Reintegrado al inventario',
+  }
+
+  return labels[status] || status
 }
 
 function StatCard({

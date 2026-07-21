@@ -38,6 +38,9 @@ type StoreSettings = {
   phone: string | null
   whatsapp: string | null
   rnc: string | null
+  pos_featured_products_limit?: number | null
+  cooperative_pos_products_limit?: number | null
+  quote_products_limit?: number | null
 }
 
 type SettingsForm = {
@@ -48,6 +51,9 @@ type SettingsForm = {
   whatsapp: string
   rnc: string
   active: boolean
+  pos_featured_products_limit: string
+  cooperative_pos_products_limit: string
+  quote_products_limit: string
 }
 
 type ProductCategory = {
@@ -78,6 +84,9 @@ const emptyForm: SettingsForm = {
   whatsapp: '',
   rnc: '',
   active: true,
+  pos_featured_products_limit: '10',
+  cooperative_pos_products_limit: '10',
+  quote_products_limit: '10',
 }
 
 function normalizeSlug(value: string) {
@@ -138,7 +147,7 @@ export default function ConfiguracionPage() {
 
     const { data, error } = await supabase
       .from('stores')
-      .select('id, name, slug, system_name, active, phone, whatsapp, rnc')
+      .select('id, name, slug, system_name, active, phone, whatsapp, rnc, pos_featured_products_limit, cooperative_pos_products_limit, quote_products_limit')
       .eq('id', storeId)
       .maybeSingle()
 
@@ -166,6 +175,9 @@ export default function ConfiguracionPage() {
       whatsapp: data.whatsapp || '',
       rnc: data.rnc || '',
       active: data.active !== false,
+      pos_featured_products_limit: String([5, 10, 20, 50].includes(Number(data.pos_featured_products_limit)) ? data.pos_featured_products_limit : 10),
+      cooperative_pos_products_limit: String([5, 10, 20, 50].includes(Number(data.cooperative_pos_products_limit)) ? data.cooperative_pos_products_limit : 10),
+      quote_products_limit: String([5, 10, 20, 50].includes(Number(data.quote_products_limit)) ? data.quote_products_limit : 10),
     })
     await loadCatalogSettings(data.id)
     setLoading(false)
@@ -221,6 +233,12 @@ export default function ConfiguracionPage() {
 
     const slug = normalizeSlug(form.slug || form.name)
     if (!slug) return alert('El slug no es valido.')
+    const posFeaturedLimit = Number(form.pos_featured_products_limit || 10)
+    const cooperativePosLimit = Number(form.cooperative_pos_products_limit || 10)
+    const quoteProductsLimit = Number(form.quote_products_limit || 10)
+    if (![5, 10, 20, 50].includes(posFeaturedLimit)) return alert('Selecciona una cantidad valida para productos destacados del POS.')
+    if (![5, 10, 20, 50].includes(cooperativePosLimit)) return alert('Selecciona una cantidad valida para productos del POS cooperativa.')
+    if (![5, 10, 20, 50].includes(quoteProductsLimit)) return alert('Selecciona una cantidad valida para productos de cotizaciones.')
 
     setSaving(true)
     setSaved(false)
@@ -235,6 +253,9 @@ export default function ConfiguracionPage() {
         whatsapp: form.whatsapp.trim() || null,
         rnc: form.rnc.trim() || null,
         active: form.active,
+        pos_featured_products_limit: posFeaturedLimit,
+        cooperative_pos_products_limit: cooperativePosLimit,
+        quote_products_limit: quoteProductsLimit,
       })
       .eq('id', store.id)
 
@@ -255,6 +276,9 @@ export default function ConfiguracionPage() {
             whatsapp: form.whatsapp.trim() || null,
             rnc: form.rnc.trim() || null,
             active: form.active,
+            pos_featured_products_limit: posFeaturedLimit,
+            cooperative_pos_products_limit: cooperativePosLimit,
+            quote_products_limit: quoteProductsLimit,
           }
         : current
     )
@@ -575,6 +599,33 @@ export default function ConfiguracionPage() {
                   </span>
                 </span>
               </label>
+            </div>
+
+            <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5 md:col-span-2">
+              <div className="mb-4">
+                <h3 className="text-lg font-bold text-zinc-950">Configuracion de productos visibles</h3>
+                <p className="text-sm leading-relaxed text-zinc-600">
+                  Estas cantidades determinan cuantos productos se muestran automaticamente al abrir cada pantalla. Las busquedas pueden mostrar otros productos.
+                </p>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-3">
+                <LimitSelect
+                  label="POS de venta"
+                  value={form.pos_featured_products_limit}
+                  onChange={(value) => updateForm('pos_featured_products_limit', value)}
+                />
+                <LimitSelect
+                  label="POS Cooperativa"
+                  value={form.cooperative_pos_products_limit}
+                  onChange={(value) => updateForm('cooperative_pos_products_limit', value)}
+                />
+                <LimitSelect
+                  label="Cotizaciones"
+                  value={form.quote_products_limit}
+                  onChange={(value) => updateForm('quote_products_limit', value)}
+                />
+              </div>
             </div>
 
             <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5 md:col-span-2">
@@ -999,6 +1050,30 @@ function CatalogRow({
   )
 }
 
+function LimitSelect({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="block">
+      <span className="mb-2 block font-bold text-zinc-950">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 font-semibold outline-none focus:border-emerald-500"
+      >
+        {[5, 10, 20, 50].map((limit) => (
+          <option key={limit} value={String(limit)}>{limit} productos</option>
+        ))}
+      </select>
+    </label>
+  )
+}
 function CooperativeCommissionRow({
   commission,
   onSave,

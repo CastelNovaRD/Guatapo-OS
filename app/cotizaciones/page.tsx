@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useEffect, useState } from 'react'
 import AppShell from '@/components/AppShell'
@@ -57,6 +57,18 @@ type QuoteItem = {
   total: number
 }
 
+type QuoteItemRow = QuoteItem & {
+  id?: string
+  quote_id?: string
+  store_id?: string
+}
+
+type ProductStockRow = {
+  id: string
+  name: string
+  stock: number
+}
+
 type AvailableNcf = {
   id: string
   ncf: string
@@ -103,6 +115,7 @@ export default function CotizacionesPage() {
   const [loadingNcf, setLoadingNcf] = useState(false)
   const [lastInvoiceId, setLastInvoiceId] = useState<string | null>(null)
   const [lastInvoicePrintId, setLastInvoicePrintId] = useState<string | null>(null)
+  const [visibleProductsLimit, setVisibleProductsLimit] = useState(10)
 
   useEffect(() => {
     loadData()
@@ -122,6 +135,12 @@ export default function CotizacionesPage() {
       .eq('store_id', currentStoreId)
       .eq('active', true)
       .order('name')
+
+    const { data: storeSettings } = await supabase
+      .from('stores')
+      .select('quote_products_limit')
+      .eq('id', currentStoreId)
+      .maybeSingle()
 
     const { data: customersData } = await supabase
       .from('quote_customers')
@@ -147,10 +166,15 @@ export default function CotizacionesPage() {
     setQuotes(quotesData || [])
   }
 
-  const filteredProducts = products.filter((product) => {
-    const text = `${product.name} ${product.sku || ''}`.toLowerCase()
-    return text.includes(search.toLowerCase())
-  })
+  const filteredProducts = (() => {
+    const query = search.toLowerCase().trim()
+    const matches = products.filter((product) => {
+      const text = `${product.name} ${product.sku || ''}`.toLowerCase()
+      return query ? text.includes(query) : true
+    })
+
+    return query ? matches : matches.slice(0, visibleProductsLimit)
+  })()
 
   const subtotal = quoteItems.reduce(
     (sum, item) => sum + item.unit_price * item.quantity,
@@ -177,9 +201,17 @@ export default function CotizacionesPage() {
   }
 
   function addProduct(product: Product) {
+    if (Number(product.stock || 0) <= 0) {
+      return alert('Este producto estÃ¡ agotado y no se puede cotizar.')
+    }
+
     const existing = quoteItems.find((item) => item.product_id === product.id)
 
     if (existing) {
+      if (existing.quantity + 1 > Number(product.stock || 0)) {
+        return alert(`Solo hay ${product.stock} unidades disponibles de ${product.name}.`)
+      }
+
       setQuoteItems(
         quoteItems.map((item) =>
           item.product_id === product.id
@@ -209,6 +241,16 @@ export default function CotizacionesPage() {
     field: keyof QuoteItem,
     value: string | number
   ) {
+    if (field === 'quantity') {
+      const item = quoteItems[index]
+      const product = products.find((product) => product.id === item.product_id)
+      const nextQuantity = Math.max(0, Number(value || 0))
+
+      if (product && nextQuantity > Number(product.stock || 0)) {
+        return alert(`Solo hay ${product.stock} unidades disponibles de ${item.product_name}.`)
+      }
+    }
+
     setQuoteItems(
       quoteItems.map((item, i) =>
         i === index ? { ...item, [field]: Number(value || 0) } : item
@@ -220,10 +262,33 @@ export default function CotizacionesPage() {
     setQuoteItems(quoteItems.filter((_, i) => i !== index))
   }
 
+  function validateQuoteStock(items: QuoteItem[]) {
+    for (const item of items) {
+      const product = products.find((product) => product.id === item.product_id)
+      if (!product) continue
+
+      if (Number(product.stock || 0) <= 0) {
+        alert(`${item.product_name} estÃ¡ agotado y no se puede cotizar.`)
+        return false
+      }
+
+      if (Number(item.quantity || 0) > Number(product.stock || 0)) {
+        alert(
+          `${item.product_name} no tiene stock suficiente. Disponible: ${product.stock}, solicitado: ${item.quantity}.`
+        )
+        return false
+      }
+    }
+
+    return true
+  }
+
   async function saveQuote() {
     if (!selectedCustomerId) return alert('Selecciona un cliente/empresa')
-    if (quoteItems.length === 0) return alert('Agrega productos a la cotización')
+    if (quoteItems.length === 0) return alert('Agrega productos a la cotizaciÃ³n')
     if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
+
+    if (!validateQuoteStock(quoteItems)) return
 
     const payload = {
       store_id: storeId,
@@ -240,7 +305,7 @@ export default function CotizacionesPage() {
 
     if (editingQuote) {
       if (editingQuote.status === 'completed') {
-        return alert('Esta cotización ya fue facturada y no se puede editar.')
+        return alert('Esta cotizaciÃ³n ya fue facturada y no se puede editar.')
       }
 
       const { error } = await supabase
@@ -281,7 +346,7 @@ export default function CotizacionesPage() {
     const { error: itemsError } = await supabase.from('quote_items').insert(items)
     if (itemsError) return alert(itemsError.message)
 
-    alert(editingQuote ? 'Cotización actualizada' : 'Cotización guardada')
+    alert(editingQuote ? 'CotizaciÃ³n actualizada' : 'CotizaciÃ³n guardada')
 
     resetQuoteForm()
     setTab('quotes')
@@ -290,7 +355,7 @@ export default function CotizacionesPage() {
 
   async function editQuote(quote: Quote) {
     if (quote.status === 'completed') {
-      return alert('Esta cotización ya fue facturada y no se puede editar.')
+      return alert('Esta cotizaciÃ³n ya fue facturada y no se puede editar.')
     }
 
     const { data: items, error } = await supabase
@@ -313,7 +378,7 @@ export default function CotizacionesPage() {
   }
 
   function openInvoiceModal(quote: Quote) {
-    if (quote.status === 'completed') return alert('Esta cotización ya fue facturada')
+    if (quote.status === 'completed') return alert('Esta cotizaciÃ³n ya fue facturada')
 
     setQuoteToInvoice(quote)
     setNcfNumber('')
@@ -379,6 +444,36 @@ export default function CotizacionesPage() {
       .eq('store_id', storeId)
       .eq('quote_id', quoteToInvoice.id)
 
+    const itemsToInvoice = (items || []) as QuoteItemRow[]
+    const productIds = itemsToInvoice.map((item) => item.product_id).filter(Boolean)
+    const { data: currentProducts, error: stockError } = await supabase
+      .from('products')
+      .select('id, name, stock')
+      .eq('store_id', storeId)
+      .in('id', productIds.length ? productIds : ['00000000-0000-0000-0000-000000000000'])
+
+    if (stockError) return alert('No pude validar el inventario: ' + stockError.message)
+
+    const currentStockByProduct = new Map(
+      ((currentProducts || []) as ProductStockRow[]).map((product) => [
+        product.id,
+        Number(product.stock || 0),
+      ])
+    )
+
+    for (const item of itemsToInvoice) {
+      const currentStock = currentStockByProduct.get(item.product_id) || 0
+      if (currentStock <= 0) {
+        return alert(`${item.product_name} estÃ¡ agotado y no se puede facturar.`)
+      }
+
+      if (Number(item.quantity || 0) > currentStock) {
+        return alert(
+          `${item.product_name} no tiene stock suficiente. Disponible: ${currentStock}, solicitado: ${item.quantity}.`
+        )
+      }
+    }
+
     const { data: sale, error } = await supabase
       .from('sales')
       .insert({
@@ -398,7 +493,7 @@ export default function CotizacionesPage() {
         fiscal_customer_rnc: fiscalRnc,
         fiscal_customer_phone: fiscalCustomer?.phone || null,
         fiscal_customer_address: fiscalCustomer?.address || null,
-        notes: `Venta generada desde cotización ${
+        notes: `Venta generada desde cotizaciÃ³n ${
           quoteToInvoice.quote_number ||
           `#${quoteToInvoice.id.slice(0, 8).toUpperCase()}`
         }`,
@@ -409,7 +504,7 @@ export default function CotizacionesPage() {
     if (error) return alert(error.message)
 
     const saleItems =
-      items?.map((item: any) => ({
+      itemsToInvoice.map((item) => ({
         sale_id: sale.id,
         store_id: storeId,
         product_id: item.product_id,
@@ -425,11 +520,11 @@ export default function CotizacionesPage() {
       await supabase.from('sale_items').insert(saleItems)
 
       for (const item of items || []) {
-        const product = products.find((p) => p.id === item.product_id)
-        if (product) {
+        const currentStock = currentStockByProduct.get(item.product_id)
+        if (typeof currentStock === 'number') {
           await supabase
             .from('products')
-            .update({ stock: product.stock - item.quantity })
+            .update({ stock: currentStock - item.quantity })
             .eq('store_id', storeId)
             .eq('id', item.product_id)
         }
@@ -469,10 +564,10 @@ export default function CotizacionesPage() {
 
   async function deleteQuote(quote: Quote) {
     if (quote.status === 'completed') {
-      return alert('Esta cotización ya fue facturada y no se puede borrar.')
+      return alert('Esta cotizaciÃ³n ya fue facturada y no se puede borrar.')
     }
 
-    if (!confirm('¿Eliminar esta cotización?')) return
+    if (!confirm('Â¿Eliminar esta cotizaciÃ³n?')) return
 
     await supabase.from('quotes').delete().eq('store_id', storeId).eq('id', quote.id)
     loadData()
@@ -519,7 +614,7 @@ export default function CotizacionesPage() {
   }
 
   async function deleteCustomer(id: string) {
-    if (!confirm('¿Eliminar este cliente?')) return
+    if (!confirm('Â¿Eliminar este cliente?')) return
     await supabase.from('quote_customers').delete().eq('store_id', storeId).eq('id', id)
     loadData()
   }
@@ -555,7 +650,7 @@ export default function CotizacionesPage() {
 
       <div className="mb-6 flex gap-3">
         <Tab
-          label={editingQuote ? 'Editar cotización' : 'Nueva cotización'}
+          label={editingQuote ? 'Editar cotizaciÃ³n' : 'Nueva cotizaciÃ³n'}
           active={tab === 'new'}
           onClick={() => setTab('new')}
         />
@@ -564,11 +659,11 @@ export default function CotizacionesPage() {
       </div>
 
       {tab === 'new' && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <section className="lg:col-span-2">
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+          <section className="min-w-0">
             {editingQuote && (
               <div className="mb-4 rounded-2xl border border-orange-200 bg-orange-50 p-4 text-orange-700">
-                Editando cotización{' '}
+                Editando cotizaciÃ³n{' '}
                 <strong>
                   {editingQuote.quote_number ||
                     `#${editingQuote.id.slice(0, 8).toUpperCase()}`}
@@ -586,13 +681,14 @@ export default function CotizacionesPage() {
               />
             </div>
 
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
               {filteredProducts.map((product) => (
                 <button
 
                   key={product.id}
                   onClick={() => addProduct(product)}
-                  className="rounded-2xl border border-zinc-200 bg-white p-5 text-left shadow-sm hover:border-emerald-500"
+                  disabled={Number(product.stock || 0) <= 0}
+                  className="rounded-2xl border border-zinc-200 bg-white p-5 text-left shadow-sm hover:border-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
                 >
 
                   <div className="mb-3 flex h-32 items-center justify-center rounded-xl bg-zinc-100">
@@ -610,7 +706,7 @@ export default function CotizacionesPage() {
 
                   <h3 className="font-bold">{product.name}</h3>
                   <p className="text-sm text-zinc-500">
-                    SKU: {product.sku || '-'} · Stock: {product.stock}
+                    SKU: {product.sku || '-'} Â· Stock: {product.stock}
                   </p>
                   <p className="mt-3 text-xl font-bold text-emerald-600">
                     {formatMoney(product.sale_price)}
@@ -622,7 +718,7 @@ export default function CotizacionesPage() {
 
           <aside className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
             <h2 className="text-xl font-bold">
-              {editingQuote ? 'Editar cotización' : 'Nueva cotización'}
+              {editingQuote ? 'Editar cotizaciÃ³n' : 'Nueva cotizaciÃ³n'}
             </h2>
 
             <label className="mt-4 block text-sm text-zinc-500">Cliente empresa</label>
@@ -690,7 +786,7 @@ export default function CotizacionesPage() {
               onClick={saveQuote}
               className="mt-5 w-full rounded-xl bg-emerald-500 py-4 font-bold text-white hover:bg-emerald-600"
             >
-              {editingQuote ? 'Guardar cambios' : 'Guardar cotización'}
+              {editingQuote ? 'Guardar cambios' : 'Guardar cotizaciÃ³n'}
             </button>
 
             {editingQuote && (
@@ -698,7 +794,7 @@ export default function CotizacionesPage() {
                 onClick={resetQuoteForm}
                 className="mt-3 w-full rounded-xl border border-zinc-300 py-3 font-bold text-zinc-700 hover:bg-zinc-100"
               >
-                Cancelar edición
+                Cancelar ediciÃ³n
               </button>
             )}
           </aside>
@@ -715,7 +811,7 @@ export default function CotizacionesPage() {
             <table className="w-full text-left">
               <thead className="text-sm text-zinc-500">
                 <tr className="border-b border-zinc-200">
-                  <th className="p-4">Cotización</th>
+                  <th className="p-4">CotizaciÃ³n</th>
                   <th className="p-4">Cliente</th>
                   <th className="p-4">NCF</th>
                   <th className="p-4">Fecha</th>
@@ -761,7 +857,7 @@ export default function CotizacionesPage() {
                           className="rounded-lg border border-zinc-300 p-2 disabled:cursor-not-allowed disabled:opacity-40"
                           title={
                             quote.status === 'completed'
-                              ? 'No se puede editar una cotización facturada'
+                              ? 'No se puede editar una cotizaciÃ³n facturada'
                               : 'Editar'
                           }
                         >
@@ -816,7 +912,7 @@ export default function CotizacionesPage() {
               <p className="text-sm text-zinc-500">RNC: {customer.rnc || '-'}</p>
               <p className="text-sm text-zinc-500">Tel: {customer.phone || '-'}</p>
               <p className="text-sm text-zinc-500">
-                Dirección: {customer.address || '-'}
+                DirecciÃ³n: {customer.address || '-'}
               </p>
 
               <div className="mt-4 flex gap-2">
@@ -853,8 +949,8 @@ export default function CotizacionesPage() {
             <div className="grid grid-cols-1 gap-4 p-6 md:grid-cols-2">
               <Input label="Nombre empresa" value={companyName} onChange={setCompanyName} />
               <Input label="RNC" value={rnc} onChange={setRnc} />
-              <Input label="Teléfono" value={phone} onChange={setPhone} />
-              <Input label="Dirección opcional" value={address} onChange={setAddress} />
+              <Input label="TelÃ©fono" value={phone} onChange={setPhone} />
+              <Input label="DirecciÃ³n opcional" value={address} onChange={setAddress} />
 
               <button
                 onClick={saveCustomer}
@@ -935,7 +1031,7 @@ export default function CotizacionesPage() {
                   })()}
 
                   <label className="mt-5 block text-sm text-zinc-500">
-                    Número de comprobante fiscal / NCF
+                    NÃºmero de comprobante fiscal / NCF
                   </label>
                   <input
                     value={ncfNumber}

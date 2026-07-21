@@ -1,4 +1,4 @@
-﻿import { QRCodeSVG } from 'qrcode.react'
+import { QRCodeSVG } from 'qrcode.react'
 import InvoiceWarranty from './InvoiceWarranty'
 import { Invoice80Customer, Invoice80Item, Invoice80PaymentMethod, Invoice80Sale, paymentMethodLabel, receiptDate, receiptMoney, receiptQrValue } from './invoice80-helpers'
 
@@ -53,9 +53,9 @@ function TotalsBlock({ sale }: { sale: Invoice80Sale }) {
         <span className="text-right">Descuento</span>
         <span className="text-right">{receiptMoney(sale.discount)}</span>
       </div>
-      <div className="grid grid-cols-[1fr_138px] items-end text-[24px] font-black">
-        <span className="text-right">Total</span>
-        <span className="text-right">{receiptMoney(sale.total)}</span>
+      <div className="flex items-end justify-center gap-2 text-[24px] font-black">
+        <span>Total</span>
+        <span>{receiptMoney(sale.total)}</span>
       </div>
     </div>
   )
@@ -70,10 +70,9 @@ export default function InvoiceQuick80({ sale, items, paymentMethod }: Props) {
 
       <div className="mt-8 text-[17px] font-bold leading-tight">
         <p>{receiptDate(sale.created_at)}</p>
-        <div className="mt-2 grid grid-cols-[32px_1fr_128px] items-center gap-2 uppercase">
-          <span>NO.</span>
-          <span>{sale.invoice_number || `FAC-${sale.id.slice(0, 7)}`}</span>
-          <span className="text-right">{paymentMethodLabel(sale, paymentMethod)}</span>
+        <div className="relative mt-2 uppercase">
+          <p className="text-center whitespace-nowrap">{sale.invoice_number || `FAC-${sale.id.slice(0, 7)}`}</p>
+          <span className="absolute right-0 top-0 text-right">{paymentMethodLabel(sale, paymentMethod)}</span>
         </div>
       </div>
 

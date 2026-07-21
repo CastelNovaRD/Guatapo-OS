@@ -1,4 +1,4 @@
-﻿import { QRCodeSVG } from 'qrcode.react'
+import { QRCodeSVG } from 'qrcode.react'
 import InvoiceWarranty from './InvoiceWarranty'
 import { formatPercent, Invoice80Customer, Invoice80FiscalCustomer, Invoice80Item, Invoice80PaymentMethod, Invoice80Sale, paymentMethodLabel, receiptDate, receiptMoney, receiptQrValue, taxPercentFromSale } from './invoice80-helpers'
 
@@ -64,9 +64,9 @@ function FiscalTotals({ sale }: { sale: Invoice80Sale }) {
         <span>Descuento</span>
         <span className="text-right">{receiptMoney(sale.discount)}</span>
       </div>
-      <div className="mt-4 grid grid-cols-[104px_1fr] items-end gap-x-4 text-[22px] font-black leading-none">
+      <div className="mt-4 flex items-end justify-center gap-2 text-[22px] font-black leading-none">
         <span>Total</span>
-        <span className="text-right">{receiptMoney(sale.total)}</span>
+        <span>{receiptMoney(sale.total)}</span>
       </div>
     </div>
   )
@@ -94,10 +94,9 @@ export default function InvoiceFiscal80({ sale, items, customer, fallbackCustome
         <p>Valido hasta: {ncfValidUntil ? receiptDate(ncfValidUntil) : '-'}</p>
         <p>RNC: {fiscalRnc}</p>
         <p className="text-[14px] leading-tight">Cliente: {fiscalName}</p>
-        <div className="grid grid-cols-[36px_1fr_120px] items-center gap-1">
-          <span>NO.</span>
-          <span>{sale.invoice_number || `FAC-${sale.id.slice(0, 7)}`}</span>
-          <span className="text-right text-[13px]">{paymentMethodLabel(sale, paymentMethod)}</span>
+        <div className="relative uppercase">
+          <p className="text-center whitespace-nowrap">{sale.invoice_number || `FAC-${sale.id.slice(0, 7)}`}</p>
+          <span className="absolute right-0 top-0 text-right text-[13px]">{paymentMethodLabel(sale, paymentMethod)}</span>
         </div>
       </div>
 

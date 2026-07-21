@@ -11,29 +11,65 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [checkingSession, setCheckingSession] = useState(true)
+  const [errorMessage, setErrorMessage] = useState('')
   const [logoFailed, setLogoFailed] = useState(false)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
+    let active = true
+
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return
+      if (error) console.warn('[Auth] Error verificando sesion en login:', error.message)
       if (data.session) router.replace('/')
       setCheckingSession(false)
     })
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!active) return
+      if (session && ['SIGNED_IN', 'TOKEN_REFRESHED', 'INITIAL_SESSION'].includes(event)) {
+        router.replace('/')
+      }
+    })
+
+    return () => {
+      active = false
+      authListener.subscription.unsubscribe()
+    }
   }, [router])
 
   async function signIn(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!email.trim() || !password.trim()) return alert('Escribe correo y contrasena')
+    setErrorMessage('')
+
+    if (!email.trim() || !password.trim()) {
+      setErrorMessage('Escribe correo y contrasena')
+      return
+    }
 
     setLoading(true)
 
-    const { error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabase.auth.signInWithPassword({
       email: email.trim(),
       password,
     })
 
+    if (error) {
+      setLoading(false)
+      setErrorMessage('No pude iniciar sesion: ' + error.message)
+      return
+    }
+
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+    const session = data.session || sessionData.session
+
     setLoading(false)
 
-    if (error) return alert('No pude iniciar sesion: ' + error.message)
+    if (sessionError) console.warn('[Auth] Error confirmando sesion:', sessionError.message)
+
+    if (!session) {
+      setErrorMessage('No se pudo confirmar la sesion. Intenta nuevamente.')
+      return
+    }
 
     router.replace('/')
   }
@@ -94,6 +130,12 @@ export default function LoginPage() {
               />
             </div>
           </label>
+
+          {errorMessage && (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
+              {errorMessage}
+            </div>
+          )}
 
           <button
             type="submit"

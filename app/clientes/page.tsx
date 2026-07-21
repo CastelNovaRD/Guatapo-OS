@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import { useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
@@ -82,6 +82,8 @@ export default function ClientesPage() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<'all' | 'customer' | 'fiscal' | 'partner'>('all')
+  const [currentPage, setCurrentPage] = useState(1)
+  const [itemsPerPage, setItemsPerPage] = useState(20)
   const [exportModalOpen, setExportModalOpen] = useState(false)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('excel')
   const [exportScope, setExportScope] = useState<CustomerExportScope>('all')
@@ -156,6 +158,10 @@ export default function ClientesPage() {
     return [...fiscalCustomers, ...normalCustomers]
   }, [customers, quoteCustomers])
 
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [search, typeFilter, itemsPerPage])
+
   const filteredCustomers = useMemo(() => {
     const q = search.toLowerCase().trim()
 
@@ -172,6 +178,11 @@ export default function ClientesPage() {
       return matchesSearch && matchesType
     })
   }, [displayCustomers, search, typeFilter, sales])
+
+  const totalCustomerPages = Math.max(1, Math.ceil(filteredCustomers.length / itemsPerPage))
+  const firstVisibleCustomer = filteredCustomers.length === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1
+  const lastVisibleCustomer = Math.min(filteredCustomers.length, currentPage * itemsPerPage)
+  const paginatedCustomers = filteredCustomers.slice(firstVisibleCustomer === 0 ? 0 : firstVisibleCustomer - 1, lastVisibleCustomer)
 
   async function handleExportCustomers() {
     const rows = displayCustomers.map((customer) => {
@@ -399,11 +410,25 @@ if (duplicateCustomer) {
       </div>
 
       <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm">
-        <div className="flex items-center justify-between border-b border-zinc-200 p-5">
-          <h2 className="text-xl font-semibold">Registro de clientes</h2>
-          <p className="text-sm text-zinc-500">
-            Mostrando {filteredCustomers.length} de {displayCustomers.length}
-          </p>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 p-5">
+          <div>
+            <h2 className="text-xl font-semibold">Registro de clientes</h2>
+            <p className="text-sm text-zinc-500">
+              Mostrando {firstVisibleCustomer}-{lastVisibleCustomer} de {filteredCustomers.length} clientes
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-sm font-semibold text-zinc-600">
+            Clientes por pagina
+            <select
+              value={itemsPerPage}
+              onChange={(e) => setItemsPerPage(Number(e.target.value))}
+              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-zinc-950 outline-none focus:border-emerald-500"
+            >
+              {[10, 20, 50, 100].map((size) => (
+                <option key={size} value={size}>{size}</option>
+              ))}
+            </select>
+          </label>
         </div>
 
         {loading ? (
@@ -427,7 +452,7 @@ if (duplicateCustomer) {
         </thead>
 
       <tbody>
-        {filteredCustomers.map((customer) => {
+        {paginatedCustomers.map((customer) => {
           const customerSales = getCustomerSales(customer)
           const totalPurchased = customerSales.reduce(
             (sum, sale) => sum + Number(sale.total || 0),
@@ -497,6 +522,29 @@ if (duplicateCustomer) {
        </table>
       </div>
         )}
+      </div>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white p-4 text-sm text-zinc-600 shadow-sm">
+        <span>
+          Pagina {currentPage} de {totalCustomerPages}
+        </span>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+            disabled={currentPage <= 1}
+            className="rounded-xl border border-zinc-200 px-4 py-2 font-semibold text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Anterior
+          </button>
+          <button
+            type="button"
+            onClick={() => setCurrentPage((page) => Math.min(totalCustomerPages, page + 1))}
+            disabled={currentPage >= totalCustomerPages}
+            className="rounded-xl border border-zinc-200 px-4 py-2 font-semibold text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Siguiente
+          </button>
+        </div>
       </div>
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">

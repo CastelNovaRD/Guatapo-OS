@@ -40,7 +40,7 @@ import { APP_NAME, APP_VERSION } from '@/lib/version'
 const CLIENT_LOGO_STORAGE_PREFIX = 'castelnova_store_logo_'
 const HUB_CONFIG_CACHE_KEY = 'castelnova_hub_config_cache'
 
-type CashStatus = 'loading' | 'open' | 'closed'
+type CashStatus = 'loading' | 'open' | 'closed' | 'error'
 type StoreContext = {
   platformName: string
   storeName: string
@@ -62,8 +62,10 @@ export default function AppShell({
   const router = useRouter()
   const pathname = usePathname()
   const [cashStatus, setCashStatus] = useState<CashStatus>('loading')
+  const [cashError, setCashError] = useState('')
   const [currentStoreId, setCurrentStoreId] = useState<string | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
+  const [authenticated, setAuthenticated] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(defaultSidebarOpen)
   const [logoFailed, setLogoFailed] = useState(false)
   const [clientLogoUrl, setClientLogoUrl] = useState('')
@@ -80,7 +82,41 @@ export default function AppShell({
   })
 
   useEffect(() => {
-    loadSessionContext()
+    let active = true
+
+    async function initializeAuth() {
+      await loadSessionContext({ redirectIfMissing: true })
+    }
+
+    void initializeAuth()
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      console.info('[Auth] Evento:', event)
+
+      if (!active) return
+
+      if (event === 'SIGNED_OUT') {
+        setAuthenticated(false)
+        setCurrentStoreId(null)
+        setCashStatus('loading')
+        setAuthLoading(false)
+        router.replace('/login')
+        return
+      }
+
+      if (event === 'TOKEN_REFRESHED') {
+        console.info('[Auth] Token renovado correctamente')
+      }
+
+      if (session?.user && ['INITIAL_SESSION', 'SIGNED_IN', 'TOKEN_REFRESHED', 'USER_UPDATED'].includes(event)) {
+        void loadSessionContext({ redirectIfMissing: false })
+      }
+    })
+
+    return () => {
+      active = false
+      authListener.subscription.unsubscribe()
+    }
   }, [])
 
   useEffect(() => {
@@ -165,16 +201,44 @@ export default function AppShell({
     }
   }
 
-  async function loadSessionContext() {
-    try {
-      const { data } = await supabase.auth.getSession()
+  async function loadSessionContext({ redirectIfMissing = true }: { redirectIfMissing?: boolean } = {}) {
+    setAuthLoading(true)
 
-      if (!data.session) {
-        router.replace('/login')
-        return
+    try {
+      let user = null as Awaited<ReturnType<typeof supabase.auth.getUser>>['data']['user'] | null
+      let lastAuthError = ''
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+
+        if (sessionData.session?.user) {
+          user = sessionData.session.user
+          break
+        }
+
+        if (sessionError) lastAuthError = sessionError.message
+
+        const { data: userData, error: userError } = await supabase.auth.getUser()
+
+        if (userData.user) {
+          user = userData.user
+          console.info('[Auth] Sesion recuperada desde getUser()')
+          break
+        }
+
+        if (userError && userError.name !== 'AuthSessionMissingError') {
+          lastAuthError = userError.message
+        }
+
+        await new Promise((resolve) => window.setTimeout(resolve, 200))
       }
 
-      const user = data.session.user
+      if (!user) {
+        console.warn('[Auth] Sesion no disponible', lastAuthError)
+        setAuthenticated(false)
+        if (redirectIfMissing) router.replace('/login')
+        return
+      }
 
       const { data: profile } = await supabase
         .from('app_profiles')
@@ -203,21 +267,27 @@ export default function AppShell({
         membership = fallbackMembership.data as { role?: string | null; store_id?: string | null; permissions?: PermissionMap | null } | null
       }
 
+      if (membershipResult.error && membershipResult.error.code !== '42703') {
+        console.warn('[Auth] No se pudo cargar la tienda del usuario:', membershipResult.error.message)
+      }
+
       let store: { name: string | null; system_name: string | null } | null = null
 
       if (membership?.store_id) {
-        const { data: storeData } = await supabase
+        const { data: storeData, error: storeError } = await supabase
           .from('stores')
           .select('name, system_name')
           .eq('id', membership.store_id)
           .maybeSingle()
 
+        if (storeError) console.warn('[Auth] Error cargando tienda:', storeError.message)
         store = storeData
       }
 
       const storeName = store?.name || 'Guatapo SRL'
       const baseRole = membership?.role || profile?.role || 'Administrador'
 
+      setAuthenticated(true)
       setCurrentStoreId(membership?.store_id || null)
       setContext({
         platformName: 'CastelNova ERP',
@@ -227,6 +297,7 @@ export default function AppShell({
         userRole: baseRole,
         permissions: mergePermissions(baseRole, membership?.permissions || null),
       })
+      console.info('[Auth] Sesion y contexto recuperados')
     } catch (error) {
       console.error('Error cargando contexto del sistema', error)
     } finally {
@@ -236,20 +307,38 @@ export default function AppShell({
 
   async function loadCashStatus() {
     if (!currentStoreId) {
-      setCashStatus('closed')
+      setCashStatus('loading')
       return
     }
 
-    const { data } = await supabase
-      .from('cash_registers')
-      .select('id')
-      .eq('store_id', currentStoreId)
-      .eq('status', 'open')
-      .order('opened_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
+    setCashStatus('loading')
 
-    setCashStatus(data ? 'open' : 'closed')
+    try {
+      const { data, error } = await supabase
+        .from('cash_registers')
+        .select('id')
+        .eq('store_id', currentStoreId)
+        .eq('status', 'open')
+        .is('closed_at', null)
+        .order('opened_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (error) {
+        console.warn('[Caja] Error consultando caja abierta:', error.message)
+        setCashError('No se pudo verificar la caja. Reintentando...')
+        setCashStatus('error')
+        return
+      }
+
+      setCashError('')
+      setCashStatus(data ? 'open' : 'closed')
+      if (data) console.info('[Caja] Caja abierta recuperada:', data.id)
+    } catch (error) {
+      console.warn('[Caja] Error de red verificando caja:', error)
+      setCashError('No se pudo verificar la caja. Reintentando...')
+      setCashStatus('error')
+    }
   }
 
   function loadClientLogo(storeId: string) {
@@ -266,6 +355,14 @@ export default function AppShell({
     return (
       <main className="flex min-h-screen items-center justify-center bg-zinc-50 p-6">
         <p className="text-zinc-500">Cargando sistema...</p>
+      </main>
+    )
+  }
+
+  if (!authenticated) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-zinc-50 p-6">
+        <p className="text-zinc-500">Redirigiendo al login...</p>
       </main>
     )
   }
@@ -579,14 +676,18 @@ export default function AppShell({
               ? 'bg-emerald-50 text-emerald-700'
               : cashStatus === 'loading'
                 ? 'bg-zinc-100 text-zinc-500'
-                : 'bg-red-50 text-red-600'
+                : cashStatus === 'error'
+                  ? 'bg-amber-50 text-amber-700'
+                  : 'bg-red-50 text-red-600'
           }`}
         >
           {cashStatus === 'open'
             ? 'Caja abierta'
             : cashStatus === 'loading'
               ? 'Verificando caja...'
-              : 'Caja cerrada'}
+              : cashStatus === 'error'
+                ? cashError || 'No se pudo verificar la caja. Reintentando...'
+                : 'Caja cerrada'}
         </div>
 
         <nav className="mt-6 space-y-1 pb-8">
