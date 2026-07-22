@@ -521,13 +521,39 @@ function getProductMainImage(product: Product) {
     }
   }
 
-  async function openCloseRegisterPanel() {
-    if (!openCash) return
+  function openCloseRegisterPanel() {
+    console.log('[Cash Register] Open close dialog')
+
+    if (!openCash) {
+      alert('No hay una caja abierta para cerrar.')
+      return
+    }
+
     setClosingAmount('')
     setCloseError('')
+    setClosePreview({
+      cashId: openCash.id,
+      openingAmount: Number(openCash.opening_amount || 0),
+      manualIn: 0,
+      manualOut: 0,
+      totalSales: Number(openCash.opening_amount || 0),
+      totalCardFee: 0,
+      totalProfit: 0,
+      difference: -Number(openCash.opening_amount || 0),
+      closingAmount: 0,
+      expectedCash: Number(openCash.opening_amount || 0),
+      cashSales: 0,
+      cardSales: 0,
+      transferSales: 0,
+      cashRefunds: 0,
+    })
     setCloseModalOpen(true)
-    const summary = await calculateCloseSummary(0)
-    if (summary) setClosePreview(summary)
+
+    window.setTimeout(() => {
+      void calculateCloseSummary(0).then((summary) => {
+        if (summary) setClosePreview(summary)
+      })
+    }, 0)
   }
 
   function isValidClosingAmount() {
@@ -1220,7 +1246,11 @@ function getProductMainImage(product: Product) {
             Cambio
           </Link>
           <button
-            onClick={openCloseRegisterPanel}
+            type="button"
+            onClick={() => {
+              console.log('[Cash Register] Close button clicked')
+              openCloseRegisterPanel()
+            }}
             className="rounded-xl bg-red-500 px-5 py-3 font-bold text-white hover:bg-red-600"
           >
             Cerrar caja
@@ -1787,6 +1817,28 @@ function getProductMainImage(product: Product) {
           </div>
         </div>
       )}
+      {closeModalOpen && (
+        <CloseRegisterModal
+          summary={closePreview}
+          amount={closingAmount}
+          error={closeError}
+          processing={closingProcessing}
+          onAmountChange={(value) => {
+            setClosingAmount(value)
+            setCloseError('')
+          }}
+          onCancel={() => {
+            if (closingProcessing) return
+            setCloseModalOpen(false)
+            setClosePreview(null)
+            setClosingAmount('')
+            setCloseError('')
+          }}
+          onCloseWithoutPrint={() => closeRegister({ printAfterClose: false })}
+          onPrintAndClose={() => closeRegister({ printAfterClose: true })}
+        />
+      )}
+
 
       {closeSummary && (
         <CloseSummaryModal
@@ -1908,6 +1960,7 @@ function CloseRegisterModal({
           <div>
             <h2 className="text-2xl font-black text-zinc-950">Cierre de caja</h2>
             <p className="text-zinc-500">Verifica el resumen e ingresa el efectivo fisico contado.</p>
+            <p className="mt-1 text-base font-bold text-emerald-700">{new Date().toLocaleDateString('es-DO', { timeZone: 'America/Santo_Domingo', dateStyle: 'full' })}</p>
           </div>
           <span className={`rounded-full bg-zinc-50 px-3 py-1 text-sm font-black ${statusClass}`}>{statusLabel}</span>
         </div>
@@ -1917,8 +1970,6 @@ function CloseRegisterModal({
           <BigRow label="Ventas en efectivo" value={summary?.cashSales || 0} />
           <BigRow label="Transferencias" value={summary?.transferSales || 0} />
           <BigRow label="Tarjetas" value={summary?.cardSales || 0} />
-          <BigRow label="Entradas manuales" value={summary?.manualIn || 0} />
-          <BigRow label="Salidas manuales" value={summary?.manualOut || 0} />
           <BigRow label="Devoluciones en efectivo" value={summary?.cashRefunds || 0} />
           <BigRow label="Efectivo esperado" value={expectedCash} />
         </div>
@@ -2032,6 +2083,10 @@ function CloseSummaryModal({
     </div>
   )
 }
+
+
+
+
 
 
 
