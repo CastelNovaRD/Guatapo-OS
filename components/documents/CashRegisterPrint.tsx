@@ -169,22 +169,27 @@ export default function CashRegisterPrint() {
 
         <div>
           <Row label="Efectivo inicial" value={formatMoney(cash.opening_amount)} />
-          <Row label="Efectivo esperado" value={formatMoney(cash.total_sales)} />
-          <Row label="Ventas efectivo" value={formatMoney(paymentBreakdown.cash)} />
-          <Row label="Ventas tarjeta" value={formatMoney(paymentBreakdown.card)} />
-          <Row label="Ventas transferencia" value={formatMoney(paymentBreakdown.transfer)} />
-          <Row label="Devoluciones efectivo" value={formatMoney(paymentBreakdown.cashRefunds)} />
-          <Row label="ComisiÃ³n tarjeta" value={formatMoney(cash.total_card_fee)} />
+          <Row label="Ventas en efectivo" value={formatMoney(paymentBreakdown.cash)} />
+          <Row label="Ventas con tarjeta" value={formatMoney(paymentBreakdown.card)} />
+          <Row label="Ventas por transferencia" value={formatMoney(paymentBreakdown.transfer)} />
+          <Row label="Devoluciones en efectivo" value={formatMoney(paymentBreakdown.cashRefunds)} />
+          <Row label="Comision tarjeta" value={formatMoney(cash.total_card_fee)} />
           <Row label="Ganancia estimada" value={formatMoney(cash.total_profit)} />
           <Row label="Efectivo contado" value={formatMoney(cash.closing_amount || 0)} />
           <Row label="Descuadre" value={formatMoney(cash.difference)} />
-          <Row label="Resultado" value={Math.abs(Number(cash.difference || 0)) < 0.01 ? 'Cuadrado' : Number(cash.difference || 0) > 0 ? 'Sobrante' : 'Faltante'} />
+        </div>
+
+        <Divider />
+
+        <div className="flex items-center justify-between gap-3 py-2">
+          <span className="text-xl font-black">Total</span>
+          <span className="text-2xl font-black">{formatMoney(paymentBreakdown.cash + paymentBreakdown.card + paymentBreakdown.transfer)}</span>
         </div>
 
         <Divider />
 
         <div className="text-center">
-          <p className="font-bold">Firma / ValidaciÃ³n</p>
+          <p className="font-bold">Firma / Validacion</p>
           <div className="mx-auto mt-8 w-48 border-t border-black" />
           <p className="mt-2">Cajero</p>
         </div>
