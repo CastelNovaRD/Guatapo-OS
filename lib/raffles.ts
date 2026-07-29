@@ -19,14 +19,26 @@ export const RAFFLE_TITLE_COLORS = {
   gold: 'text-amber-500',
 } as const
 
+function isRaffleTitleColor(value: unknown): value is RaffleTitleSegment['color'] {
+  return value === 'black' || value === 'green' || value === 'gold'
+}
+
+function asRaffleTitleSegmentInput(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {}
+}
+
 export function normalizeRaffleTitleSegments(value: unknown, fallback = ''): RaffleTitleSegment[] {
   if (Array.isArray(value)) {
     const safe = value
-      .map((item) => ({
-        text: String((item as any)?.text || '').slice(0, 180),
-        color: ['black', 'green', 'gold'].includes(String((item as any)?.color)) ? String((item as any)?.color) as RaffleTitleSegment['color'] : 'black',
-        bold: Boolean((item as any)?.bold ?? true),
-      }))
+      .map((item) => {
+        const segment = asRaffleTitleSegmentInput(item)
+        const color = isRaffleTitleColor(segment.color) ? segment.color : 'black'
+        return {
+          text: String(segment.text || '').slice(0, 180),
+          color,
+          bold: Boolean(segment.bold ?? true),
+        }
+      })
       .filter((item) => item.text.trim())
     if (safe.length) return safe
   }
@@ -72,6 +84,7 @@ export type Raffle = {
 
 export type RaffleUpload = {
   id: string
+  store_id?: string | null
   raffle_id: string
   file_url: string
   is_primary: boolean

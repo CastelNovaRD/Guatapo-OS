@@ -83,6 +83,7 @@ export default function RafflesPage() {
   const [form, setForm] = useState<RaffleForm>(emptyForm)
   const [saving, setSaving] = useState(false)
   const [deletingRaffleId, setDeletingRaffleId] = useState<string | null>(null)
+  const [deletingUploadId, setDeletingUploadId] = useState<string | null>(null)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [raffleSettings, setRaffleSettings] = useState({ whatsapp_url: '', instagram_url: '' })
   const [webSettings, setWebSettings] = useState<WebSettings>(DEFAULT_WEB_SETTINGS)
@@ -102,7 +103,7 @@ export default function RafflesPage() {
       supabase.from('raffles').select('*').eq('store_id', currentStoreId).order('created_at', { ascending: false }),
       supabase.from('raffle_entries').select('id, raffle_id, participant_id, payment_id, ticket_number, status').eq('store_id', currentStoreId),
       supabase.from('raffle_payments').select('id, raffle_id, participant_id, bank_account_id, quantity, amount, proof_url, status, rejection_reason, notes, created_at, raffle_participants(full_name, cedula, phone), raffle_bank_accounts(bank_name)').eq('store_id', currentStoreId),
-      supabase.from('raffle_uploads').select('id, raffle_id, file_url, is_primary, sort_order').eq('store_id', currentStoreId).order('sort_order'),
+      supabase.from('raffle_uploads').select('id, store_id, raffle_id, file_url, is_primary, sort_order').eq('store_id', currentStoreId).order('sort_order'),
       supabase.from('raffle_settings').select('whatsapp_url, instagram_url, schedule').eq('store_id', currentStoreId).maybeSingle(),
       supabase.from('raffle_bank_accounts').select('*').eq('store_id', currentStoreId).order('bank_name'),
     ])
@@ -125,7 +126,10 @@ export default function RafflesPage() {
     setLoading(false)
   }, [])
 
-  useEffect(() => { void loadData() }, [loadData])
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => { void loadData() }, 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [loadData])
 
   const totals = useMemo(() => {
     const active = raffles.filter((raffle) => raffle.status === 'active').length
@@ -253,6 +257,79 @@ export default function RafflesPage() {
   }
 
 
+  function getRaffleUploads(raffleId: string) {
+    return uploads
+      .filter((upload) => upload.raffle_id === raffleId)
+      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0))
+  }
+
+  function getStorageTarget(fileUrl: string) {
+    const value = String(fileUrl || '').trim()
+    if (!value || value.startsWith('data:') || value.startsWith('blob:')) return null
+
+    try {
+      const url = new URL(value)
+      const marker = '/storage/v1/object/public/'
+      const markerIndex = url.pathname.indexOf(marker)
+      if (markerIndex < 0) return null
+      const rest = decodeURIComponent(url.pathname.slice(markerIndex + marker.length))
+      const [bucket, ...pathParts] = rest.split('/')
+      const storagePath = pathParts.join('/')
+      if (!bucket || !storagePath) return null
+      return { bucket, path: storagePath }
+    } catch {
+      return null
+    }
+  }
+
+  async function removeUploadFileIfStored(fileUrl: string) {
+    const target = getStorageTarget(fileUrl)
+    if (!target) return
+
+    const { error } = await supabase.storage.from(target.bucket).remove([target.path])
+    if (error && !String(error.message || '').toLowerCase().includes('not found')) {
+      throw new Error(`Storage ${target.bucket}/${target.path}: ${error.message}`)
+    }
+  }
+
+  async function deleteRaffleUpload(upload: RaffleUpload) {
+    if (!storeId || deletingUploadId) return
+    if (!confirm('Eliminar esta imagen de la rifa? Esta accion no se puede deshacer.')) return
+
+    setDeletingUploadId(upload.id)
+    try {
+      await removeUploadFileIfStored(upload.file_url)
+
+      const { data, error } = await supabase
+        .from('raffle_uploads')
+        .delete()
+        .eq('store_id', storeId)
+        .eq('raffle_id', upload.raffle_id)
+        .eq('id', upload.id)
+        .select('id')
+
+      if (error) throw error
+      if (!data?.length) throw new Error('Supabase no elimino el registro de la imagen. Revisa permisos/RLS o si ya fue eliminada.')
+
+      const remaining = getRaffleUploads(upload.raffle_id).filter((item) => item.id !== upload.id)
+      if (remaining.length > 0 && (upload.is_primary || !remaining.some((item) => item.is_primary))) {
+        await supabase
+          .from('raffle_uploads')
+          .update({ is_primary: true })
+          .eq('store_id', storeId)
+          .eq('id', remaining[0].id)
+      }
+
+      await loadData()
+      alert('Imagen eliminada correctamente.')
+    } catch (uploadError) {
+      console.error('Error eliminando imagen de rifa:', uploadError)
+      alert('Error eliminando imagen: ' + (uploadError instanceof Error ? uploadError.message : 'Error desconocido'))
+    } finally {
+      setDeletingUploadId(null)
+    }
+  }
+
   async function saveRaffle() {
     if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
     if (!form.internal_name.trim() || !form.public_title.trim()) return alert('Completa el nombre interno y el titulo publico.')
@@ -348,8 +425,13 @@ ${raffle.public_title}`)?.trim() || ''
 
   async function deleteRaffle(raffle: Raffle) {
     if (!storeId || deletingRaffleId) return
+    const raffleEntries = entries.filter((entry) => entry.raffle_id === raffle.id)
+    const rafflePayments = payments.filter((payment) => payment.raffle_id === raffle.id)
+    const hasActivity = raffleEntries.length > 0 || rafflePayments.length > 0
     const confirmation = prompt(`Para eliminar definitivamente la rifa escribe ELIMINAR:
-${raffle.public_title}`)
+${raffle.public_title}
+
+${hasActivity ? 'Esta rifa tiene participantes/pagos. Se eliminaran boletos, pagos e imagenes relacionados.' : 'Esta rifa no tiene participantes registrados.'}`)
     if ((confirmation || '').trim().toUpperCase() !== 'ELIMINAR') return
 
     setDeletingRaffleId(raffle.id)
@@ -362,16 +444,29 @@ ${raffle.public_title}`)
       error.hint ? `Pista: ${error.hint}` : '',
     ].filter(Boolean).join('\n')
 
-    const runDeleteStep = async (label: string, request: PromiseLike<{ error: SupabaseDeleteError | null }>) => {
+    const runDeleteStep = async (label: string, request: PromiseLike<{ error: SupabaseDeleteError | null }>, optional = false) => {
       const { error } = await request
-      if (error) throw new Error(`${label}\n${formatDeleteError(error)}`)
+      if (!error) return
+      if (optional && (error.code === '42P01' || String(error.message || '').includes('does not exist'))) {
+        console.warn(`${label}: tabla opcional no existe`, error)
+        return
+      }
+      throw new Error(`${label}\n${formatDeleteError(error)}`)
+    }
+
+    const raffleUploads = getRaffleUploads(raffle.id)
+
+    const deleteStorageFiles = async () => {
+      for (const upload of raffleUploads) {
+        await removeUploadFileIfStored(upload.file_url)
+      }
     }
 
     const deleteFromClient = async () => {
       const { data: userData } = await supabase.auth.getUser()
-      await logRaffleAudit({ storeId, raffleId: raffle.id, userId: userData.user?.id || null, action: 'raffle.delete', detail: `Rifa eliminada: ${raffle.public_title}.`, metadata: { slug: raffle.slug, internal_name: raffle.internal_name } })
-      await runDeleteStep('Error eliminando ganadores', supabase.from('raffle_winners').delete().eq('store_id', storeId).eq('raffle_id', raffle.id))
-      await runDeleteStep('Error eliminando sorteos', supabase.from('raffle_draws').delete().eq('store_id', storeId).eq('raffle_id', raffle.id))
+      await logRaffleAudit({ storeId, raffleId: raffle.id, userId: userData.user?.id || null, action: 'raffle.delete', detail: `Rifa eliminada: ${raffle.public_title}.`, metadata: { slug: raffle.slug, internal_name: raffle.internal_name, had_activity: hasActivity } })
+      await runDeleteStep('Error eliminando ganadores', supabase.from('raffle_winners').delete().eq('store_id', storeId).eq('raffle_id', raffle.id), true)
+      await runDeleteStep('Error eliminando sorteos', supabase.from('raffle_draws').delete().eq('store_id', storeId).eq('raffle_id', raffle.id), true)
       await runDeleteStep('Error eliminando boletos', supabase.from('raffle_entries').delete().eq('store_id', storeId).eq('raffle_id', raffle.id))
       await runDeleteStep('Error eliminando pagos', supabase.from('raffle_payments').delete().eq('store_id', storeId).eq('raffle_id', raffle.id))
       await runDeleteStep('Error eliminando imagenes', supabase.from('raffle_uploads').delete().eq('store_id', storeId).eq('raffle_id', raffle.id))
@@ -381,11 +476,11 @@ ${raffle.public_title}`)
     }
 
     try {
+      await deleteStorageFiles()
+
       const { data, error } = await supabase.rpc('delete_raffle_admin', { p_raffle_id: raffle.id })
       if (error) {
-        const message = String(error.message || '').toLowerCase()
-        const missingFunction = error.code === 'PGRST202' || message.includes('function') || message.includes('schema cache')
-        if (!missingFunction) throw new Error(formatDeleteError(error))
+        console.error('RPC delete_raffle_admin fallo, usando fallback cliente:', error)
         await deleteFromClient()
       } else if (!data || (typeof data === 'object' && 'ok' in data && !data.ok)) {
         throw new Error('La funcion delete_raffle_admin no confirmo la eliminacion.')
@@ -393,7 +488,9 @@ ${raffle.public_title}`)
 
       if (editing?.id === raffle.id) { setEditing(null); setFormOpen(false) }
       await loadData()
+      alert('Rifa eliminada correctamente.')
     } catch (deleteError) {
+      console.error('Error eliminando rifa:', deleteError)
       alert(`Error eliminando rifa:\n${deleteError instanceof Error ? deleteError.message : 'Error desconocido'}`)
       setDeletingRaffleId(null)
       return
@@ -575,6 +672,7 @@ ${raffle.public_title}`)
         <Input label="Fecha inicio" type="datetime-local" value={form.start_at} onChange={(v) => updateForm('start_at', v)} />
         <Input label="Fecha finalizacion" type="datetime-local" value={form.end_at} onChange={(v) => updateForm('end_at', v)} />
         <label className="block md:col-span-2"><span className="mb-1 block font-bold text-zinc-600">Imagenes del premio</span><input type="file" accept="image/*" multiple onChange={(event) => setFormImages(event.target.files)} className="w-full rounded-xl border border-zinc-200 px-4 py-3" /></label>
+        {editing && <div className="md:col-span-2 rounded-2xl border border-zinc-200 bg-zinc-50 p-4"><h3 className="font-black text-zinc-950">Imagenes actuales</h3><div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{getRaffleUploads(editing.id).map((upload) => <div key={upload.id} className="overflow-hidden rounded-xl border border-zinc-200 bg-white"><div className="flex h-36 items-center justify-center bg-zinc-100"><img src={upload.file_url} alt="Imagen de rifa" className="h-full w-full object-cover" /></div><div className="flex items-center justify-between gap-2 p-3"><span className="text-xs font-black text-zinc-600">{upload.is_primary ? 'Principal' : 'Imagen'}</span><button type="button" disabled={deletingUploadId === upload.id} onClick={() => void deleteRaffleUpload(upload)} className="rounded-lg bg-red-50 px-3 py-2 text-xs font-black text-red-700 disabled:opacity-50">{deletingUploadId === upload.id ? 'Eliminando...' : 'Eliminar'}</button></div></div>)}{getRaffleUploads(editing.id).length === 0 && <p className="text-sm font-bold text-zinc-500">Esta rifa no tiene imagenes cargadas.</p>}</div></div>}
       </div>
       <TextArea label="Descripcion" value={form.description} onChange={(v) => updateForm('description', v)} />
       <TextArea label="Descripcion detallada del premio" value={form.detailed_description} onChange={(v) => updateForm('detailed_description', v)} />
