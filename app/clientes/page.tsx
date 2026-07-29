@@ -3,12 +3,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
 import { supabase } from '@/lib/supabase'
-import { Download, Edit, Plus, Search, Trash2, Users, X } from 'lucide-react'
+import { Download, Edit, Plus, Search, Trash2, Upload, Users, X } from 'lucide-react'
 import { formatDate, formatMoney } from '@/lib/format'
 import { getCurrentStoreId } from '@/lib/store-context'
 import ExportModal from '@/components/export/ExportModal'
+import ImportModal from '@/components/importing/ImportModal'
 import { exportCustomers as exportCustomersFile } from '@/lib/export/customers-export'
 import type { CustomerExportScope, ExportFormat } from '@/lib/export/export-types'
+import { commitCustomersImport, previewCustomersImport } from '@/lib/importing/customers-import'
+import type { ImportMode, ImportPreview } from '@/lib/importing/excel-import'
 
 type Customer = {
   id: string
@@ -67,7 +70,7 @@ function formatPhone(value: string) {
   return `${numbers.slice(0, 3)}-${numbers.slice(3, 6)}-${numbers.slice(6)}`
 }
 
-function formatCedula(value: string) {
+function formatCédula(value: string) {
   const numbers = value.replace(/\D/g, '').slice(0, 11)
   if (numbers.length <= 3) return numbers
   if (numbers.length <= 10) return `${numbers.slice(0, 3)}-${numbers.slice(3)}`
@@ -87,6 +90,13 @@ export default function ClientesPage() {
   const [exportModalOpen, setExportModalOpen] = useState(false)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('excel')
   const [exportScope, setExportScope] = useState<CustomerExportScope>('all')
+  const [importModalOpen, setImportModalOpen] = useState(false)
+  const [importMode, setImportMode] = useState<ImportMode>('upsert')
+  const [importAllowBlankClear, setImportAllowBlankClear] = useState(false)
+  const [importPreview, setImportPreview] = useState<ImportPreview<any> | null>(null)
+  const [importLoading, setImportLoading] = useState(false)
+  const [importCommitting, setImportCommitting] = useState(false)
+  const [importResult, setImportResult] = useState<{ created: number; updated: number; omitted: number; errors: number } | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null)
   const [form, setForm] = useState<CustomerForm>(emptyForm)
@@ -182,10 +192,10 @@ export default function ClientesPage() {
   const totalCustomerPages = Math.max(1, Math.ceil(filteredCustomers.length / itemsPerPage))
   const firstVisibleCustomer = filteredCustomers.length === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1
   const lastVisibleCustomer = Math.min(filteredCustomers.length, currentPage * itemsPerPage)
-  const paginatedCustomers = filteredCustomers.slice(firstVisibleCustomer === 0 ? 0 : firstVisibleCustomer - 1, lastVisibleCustomer)
+  const páginatedCustomers = filteredCustomers.slice(firstVisibleCustomer === 0 ? 0 : firstVisibleCustomer - 1, lastVisibleCustomer)
 
-  async function handleExportCustomers() {
-    const rows = displayCustomers.map((customer) => {
+  function buildCustomerExportRows() {
+    return displayCustomers.map((customer) => {
       const customerSales = getCustomerSales(customer)
       const lastSale = customerSales[0]
       return {
@@ -199,9 +209,47 @@ export default function ClientesPage() {
         createdAt: customer.created_at,
       }
     })
+  }
 
-    await exportCustomersFile({ rows, format: exportFormat, scope: exportScope })
+  async function handleExportCustomers() {
+    await exportCustomersFile({ rows: buildCustomerExportRows(), format: exportFormat, scope: exportScope })
     setExportModalOpen(false)
+  }
+
+  async function handleCustomersImportFile(file: File) {
+    setImportLoading(true)
+    setImportResult(null)
+    try {
+      const preview = await previewCustomersImport({ file, customers, mode: importMode })
+      setImportPreview(preview)
+    } catch (error) {
+      setImportPreview({
+        headers: [],
+        rows: [],
+        criticalError: error instanceof Error ? error.message : 'Error leyendo archivo.',
+      })
+    } finally {
+      setImportLoading(false)
+    }
+  }
+
+  async function confirmCustomersImport() {
+    if (!storeId || !importPreview) return
+    setImportCommitting(true)
+    try {
+      const result = await commitCustomersImport({
+        storeId,
+        preview: importPreview,
+        mode: importMode,
+        allowBlankClear: importAllowBlankClear,
+      })
+      setImportResult(result)
+      await loadData()
+    } catch (error) {
+      alert('Error importando clientes: ' + (error instanceof Error ? error.message : String(error)))
+    } finally {
+      setImportCommitting(false)
+    }
   }
   function getCustomerSales(customer: DisplayCustomer) {
     if (customer.source === 'quote_customer') {
@@ -299,7 +347,7 @@ async function deleteCustomer(customer: Customer) {
     setSaving(true)
 
   const duplicateCustomer = customers.find((customer) => {
-  const sameCedula =
+  const sameCédula =
     form.cedula.trim() &&
     customer.cedula?.trim() === form.cedula.trim()
 
@@ -310,7 +358,7 @@ async function deleteCustomer(customer: Customer) {
   const isDifferentCustomer =
     !editingCustomer || customer.id !== editingCustomer.id
 
-  return isDifferentCustomer && (sameCedula || samePhone)
+  return isDifferentCustomer && (sameCédula || samePhone)
 })
 
 if (duplicateCustomer) {
@@ -379,7 +427,7 @@ if (duplicateCustomer) {
         </button>
       </div>
 
-      <div className="mb-6 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_auto]">
+      <div className="mb-6 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_auto_auto]">
         <div className="flex items-center gap-3 rounded-2xl border border-zinc-200 bg-white px-4 py-3 shadow-sm">
         <Search className="text-emerald-500" size={20} />
         <input
@@ -407,6 +455,14 @@ if (duplicateCustomer) {
           <Download size={18} />
           Exportar
         </button>
+        <button
+          type="button"
+          onClick={() => setImportModalOpen(true)}
+          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 font-bold text-emerald-700 shadow-sm hover:bg-emerald-100"
+        >
+          <Upload size={18} />
+          Importación
+        </button>
       </div>
 
       <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm">
@@ -418,7 +474,7 @@ if (duplicateCustomer) {
             </p>
           </div>
           <label className="flex items-center gap-2 text-sm font-semibold text-zinc-600">
-            Clientes por pagina
+            Clientes por página
             <select
               value={itemsPerPage}
               onChange={(e) => setItemsPerPage(Number(e.target.value))}
@@ -447,12 +503,12 @@ if (duplicateCustomer) {
               <th className="p-4">Compras</th>
               <th className="p-4">Total</th>
               <th className="p-4">Última compra</th>
-              <th className="p-4 text-right">Acciones</th>
+              <th className="p-4 text-right">Acciónes</th>
             </tr>
         </thead>
 
       <tbody>
-        {paginatedCustomers.map((customer) => {
+        {páginatedCustomers.map((customer) => {
           const customerSales = getCustomerSales(customer)
           const totalPurchased = customerSales.reduce(
             (sum, sale) => sum + Number(sale.total || 0),
@@ -525,7 +581,7 @@ if (duplicateCustomer) {
       </div>
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white p-4 text-sm text-zinc-600 shadow-sm">
         <span>
-          Pagina {currentPage} de {totalCustomerPages}
+          Página {currentPage} de {totalCustomerPages}
         </span>
         <div className="flex gap-2">
           <button
@@ -584,7 +640,7 @@ if (duplicateCustomer) {
               <Input
                 label="Cédula"
                 value={form.cedula}
-                onChange={(value) => updateForm('cedula', formatCedula(value))}
+                onChange={(value) => updateForm('cedula', formatCédula(value))}
                 placeholder="402-4376435-8"
               />
 
@@ -613,6 +669,24 @@ if (duplicateCustomer) {
           </div>
         </div>
       )}
+
+      <ImportModal
+        open={importModalOpen}
+        title="Importación de clientes"
+        templateName="clientes-guatapo"
+        preview={importPreview}
+        loading={importLoading}
+        committing={importCommitting}
+        mode={importMode}
+        allowBlankClear={importAllowBlankClear}
+        onModeChange={(mode) => { setImportMode(mode); setImportPreview(null); setImportResult(null) }}
+        onAllowBlankClearChange={setImportAllowBlankClear}
+        onFile={(file) => void handleCustomersImportFile(file)}
+        onConfirm={() => void confirmCustomersImport()}
+        onClose={() => setImportModalOpen(false)}
+        onDownloadTemplate={() => void exportCustomersFile({ rows: [], format: 'excel', scope: 'all' })}
+        result={importResult}
+      />
 
       <ExportModal
         open={exportModalOpen}

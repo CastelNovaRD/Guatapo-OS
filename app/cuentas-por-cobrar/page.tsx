@@ -168,7 +168,7 @@ export default function CuentasPorCobrarPage() {
   const totalReceivablePages = Math.max(1, Math.ceil(filteredSales.length / itemsPerPage))
   const firstVisibleSale = filteredSales.length === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1
   const lastVisibleSale = Math.min(filteredSales.length, currentPage * itemsPerPage)
-  const paginatedSales = filteredSales.slice(firstVisibleSale === 0 ? 0 : firstVisibleSale - 1, lastVisibleSale)
+  const páginatedSales = filteredSales.slice(firstVisibleSale === 0 ? 0 : firstVisibleSale - 1, lastVisibleSale)
 
   const selectedSales = filteredSales.filter((sale) => selectedIds.includes(sale.id))
 
@@ -305,7 +305,7 @@ export default function CuentasPorCobrarPage() {
           <input
             value={memberSearch}
             onChange={(e) => setMemberSearch(e.target.value)}
-            placeholder="Buscar por socio, cÃ©dula, telÃ©fono o factura..."
+            placeholder="Buscar por socio, cédula, teléfono o factura..."
             className="w-full bg-transparent outline-none"
           />
         </div>
@@ -320,7 +320,7 @@ export default function CuentasPorCobrarPage() {
             </p>
           </div>
           <label className="flex items-center gap-2 text-sm font-semibold text-zinc-600">
-            Facturas por pagina
+            Facturas por página
             <select
               value={itemsPerPage}
               onChange={(e) => setItemsPerPage(Number(e.target.value))}
@@ -354,7 +354,7 @@ export default function CuentasPorCobrarPage() {
               </thead>
 
               <tbody>
-                {paginatedSales.map((sale) => {
+                {páginatedSales.map((sale) => {
                   const customer = customerOf(sale)
 
                   return (
@@ -377,7 +377,7 @@ export default function CuentasPorCobrarPage() {
                           {customer?.full_name || 'Sin socio'}
                         </p>
                         <p className="text-sm text-zinc-500">
-                          {customer?.cedula || '-'} Â· {customer?.phone || '-'}
+                          {customer?.cedula || '-'} · {customer?.phone || '-'}
                         </p>
                       </td>
 
@@ -407,7 +407,7 @@ export default function CuentasPorCobrarPage() {
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white p-4 text-sm text-zinc-600 shadow-sm">
         <span>
-          Pagina {currentPage} de {totalReceivablePages}
+          Página {currentPage} de {totalReceivablePages}
         </span>
         <div className="flex gap-2">
           <button

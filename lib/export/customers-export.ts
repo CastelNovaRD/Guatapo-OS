@@ -2,6 +2,7 @@
 import { exportPdfDocument } from './pdf-common'
 import type { CustomerExportScope, ExportFormat } from './export-types'
 import { todayIsoDate } from './export-common'
+import { CUSTOMER_TEMPLATE_COLUMNS } from './shared-templates'
 
 type CustomerExportRow = {
   name: string
@@ -33,16 +34,7 @@ export async function exportCustomers(params: { rows: CustomerExportRow[]; forma
       { label: 'Socios', value: params.rows.filter((row) => row.type === 'Socio').length, type: 'number' as const },
       { label: 'Total comprado', value: params.rows.reduce((sum, row) => sum + Number(row.totalPurchased || 0), 0), type: 'money' as const },
     ],
-    columns: [
-      { key: 'name', header: 'Nombre', width: 28 },
-      { key: 'phone', header: 'Telefono', width: 16 },
-      { key: 'document', header: 'Cedula o RNC', width: 18 },
-      { key: 'type', header: 'Tipo', width: 16 },
-      { key: 'purchases', header: 'Cantidad de compras', type: 'number' as const, width: 18 },
-      { key: 'totalPurchased', header: 'Total comprado', type: 'money' as const, width: 16 },
-      { key: 'lastPurchase', header: 'Ultima compra', type: 'date' as const, width: 16 },
-      { key: 'createdAt', header: 'Fecha de registro', type: 'date' as const, width: 18 },
-    ],
+    columns: CUSTOMER_TEMPLATE_COLUMNS,
     rows: filtered,
   }
   if (params.format === 'excel') return exportExcelDocument(document)

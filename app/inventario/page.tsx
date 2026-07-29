@@ -9,8 +9,11 @@ import { getCurrentStoreId } from '@/lib/store-context'
 import { uploadProductImageOrFallback } from '@/lib/image-upload'
 import { logAudit } from '@/lib/audit'
 import ExportModal from '@/components/export/ExportModal'
-import { exportInventory } from '@/lib/export/inventory-export'
+import ImportModal from '@/components/importing/ImportModal'
+import { downloadInventoryQuickTemplate, exportInventory } from '@/lib/export/inventory-export'
 import type { ExportFormat, InventoryExportScope } from '@/lib/export/export-types'
+import { commitInventoryImport, previewInventoryImport, type InventoryImportData, type InventoryStockTreatment, type UnknownCategoryStrategy } from '@/lib/importing/inventory-import'
+import type { ImportMode, ImportPreview } from '@/lib/importing/excel-import'
 import {
   Archive,
   Download,
@@ -27,6 +30,8 @@ import {
   Upload,
   X,
 } from 'lucide-react'
+
+type ProductSpecs = Record<string, string | null | undefined>
 
 type Product = {
   id: string
@@ -47,7 +52,7 @@ type Product = {
   short_description: string | null
   slug: string | null
   full_description: string | null
-  specs: any
+  specs: ProductSpecs | null
   updated_at?: string | null
 }
 
@@ -240,6 +245,15 @@ export default function InventarioPage() {
   const [exportFormat, setExportFormat] = useState<ExportFormat>('excel')
   const [exportScope, setExportScope] = useState<InventoryExportScope>('all')
   const [exportCategory, setExportCategory] = useState('')
+  const [importModalOpen, setImportModalOpen] = useState(false)
+  const [importMode, setImportMode] = useState<ImportMode>('upsert')
+  const [importAllowBlankClear, setImportAllowBlankClear] = useState(false)
+  const [importPreview, setImportPreview] = useState<ImportPreview<InventoryImportData> | null>(null)
+  const [importLoading, setImportLoading] = useState(false)
+  const [importCommitting, setImportCommitting] = useState(false)
+  const [importResult, setImportResult] = useState<{ created: number; updated: number; omitted: number; errors: number } | null>(null)
+  const [unknownCategoryStrategy, setUnknownCategoryStrategy] = useState<UnknownCategoryStrategy>('cancel')
+  const [importStockTreatment, setImportStockTreatment] = useState<InventoryStockTreatment>('add')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [inventoryPage, setInventoryPage] = useState(1)
   const [productsPerPage, setProductsPerPage] = useState(20)
@@ -273,6 +287,34 @@ function getProductMainImage(product: Product) {
   }, [])
 
   useEffect(() => {
+    if (!storeId) return
+
+    const refreshInventorySilently = () => {
+      void refreshInventory({ silent: true })
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') refreshInventorySilently()
+    }
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === 'guatapo_inventory_updated_at') refreshInventorySilently()
+    }
+
+    window.addEventListener('focus', refreshInventorySilently)
+    window.addEventListener('storage', handleStorage)
+    window.addEventListener('guatapo:inventory-updated', refreshInventorySilently)
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      window.removeEventListener('focus', refreshInventorySilently)
+      window.removeEventListener('storage', handleStorage)
+      window.removeEventListener('guatapo:inventory-updated', refreshInventorySilently)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [storeId, inventoryPage, productsPerPage, debouncedSearch, categoryFilter, activeFilter, stockFilter, stockMinFilter, stockMaxFilter])
+
+  useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 350)
     return () => window.clearTimeout(timer)
   }, [search])
@@ -285,13 +327,13 @@ function getProductMainImage(product: Product) {
     if (storeId) void loadProductsPage(storeId)
   }, [storeId, inventoryPage, productsPerPage, debouncedSearch, categoryFilter, activeFilter, stockFilter, stockMinFilter, stockMaxFilter])
 
-  async function loadData() {
-    setLoading(true)
+  async function loadData(options: { silent?: boolean } = {}) {
+    if (!options.silent) setLoading(true)
     const currentStoreId = await getCurrentStoreId()
     setStoreId(currentStoreId)
 
     if (!currentStoreId) {
-      setLoading(false)
+      if (!options.silent) setLoading(false)
       return alert('Este usuario no tiene una tienda asignada.')
     }
 
@@ -333,13 +375,13 @@ function getProductMainImage(product: Product) {
       low_stock_count: Number(summaryRow?.low_stock_count || 0),
       out_of_stock_count: Number(summaryRow?.out_of_stock_count || 0),
     })
-    setLoading(false)
+    if (!options.silent) setLoading(false)
   }
 
-  async function loadProductsPage(currentStoreId = storeId) {
+  async function loadProductsPage(currentStoreId = storeId, options: { silent?: boolean } = {}) {
     if (!currentStoreId) return
 
-    setLoading(true)
+    if (!options.silent) setLoading(true)
     setInventoryError('')
 
     const from = (inventoryPage - 1) * productsPerPage
@@ -368,15 +410,18 @@ function getProductMainImage(product: Product) {
       .range(from, to)
 
     if (error) {
-      setProducts([])
-      setProductImages([])
-      setTotalProducts(0)
+      if (!options.silent) {
+        setProducts([])
+        setProductImages([])
+        setTotalProducts(0)
+      }
       setInventoryError('Error cargando inventario: ' + error.message)
-      setLoading(false)
+      if (!options.silent) setLoading(false)
       return
     }
 
     const pageProducts = data || []
+    setInventoryError('')
     setProducts(pageProducts)
     setTotalProducts(count || 0)
 
@@ -395,7 +440,13 @@ function getProductMainImage(product: Product) {
       setProductImages([])
     }
 
-    setLoading(false)
+    if (!options.silent) setLoading(false)
+  }
+
+  async function refreshInventory(options: { silent?: boolean } = {}) {
+    const currentStoreId = storeId || await getCurrentStoreId()
+    await loadData(options)
+    if (currentStoreId) await loadProductsPage(currentStoreId, options)
   }
 
   const filteredProducts = products
@@ -517,7 +568,7 @@ async function uploadProductImage(file: File) {
   }
 
   await uploadProductImageForProduct(file, editingProduct.id)
-  await loadData()
+  await refreshInventory({ silent: true })
 }
 
 async function uploadProductImageForProduct(file: File, productId: string, sortOffset = 0) {
@@ -667,7 +718,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
     setEditingProduct(null)
     setPendingImages([])
     setForm(emptyForm)
-    loadData()
+    void refreshInventory({ silent: true })
   }
 
   async function toggleProductActive(product: Product) {
@@ -693,7 +744,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
       afterData: { active: !isActive },
     })
 
-    loadData()
+    void refreshInventory({ silent: true })
   }
 
   async function deleteProduct(product: Product) {
@@ -714,7 +765,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
       beforeData: product,
     })
 
-    loadData()
+    void refreshInventory({ silent: true })
   }
 
   function openStockModal(product: Product) {
@@ -767,18 +818,124 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
 
     setStockModal(false)
     setStockProduct(null)
-    loadData()
+    void refreshInventory({ silent: true })
   }
 
 
+  async function fetchInventoryProductsForExport() {
+    if (!storeId) throw new Error('Este usuario no tiene una tienda asignada.')
+    if (exportScope === 'page') return products
+
+    const pageSize = 1000
+    let from = 0
+    const allProducts: Product[] = []
+
+    while (true) {
+      let query = supabase
+        .from('products')
+        .select('id, name, sku, barcode, image_url, cost, sale_price, coop_price, stock, product_type, category, active, show_on_website, web_visibility, featured, short_description, slug, full_description, specs, updated_at')
+        .eq('store_id', storeId)
+
+      if (exportScope === 'active') query = query.neq('active', false)
+      if (exportScope === 'low') query = query.neq('active', false).gt('stock', 0).lte('stock', 2)
+      if (exportScope === 'out') query = query.neq('active', false).lte('stock', 0)
+      if (exportScope === 'category' && exportCategory) query = query.eq('category', exportCategory)
+
+      const { data, error } = await query
+        .order('created_at', { ascending: false })
+        .range(from, from + pageSize - 1)
+
+      if (error) throw error
+      const batch = (data || []) as Product[]
+      allProducts.push(...batch)
+      if (batch.length < pageSize) break
+      from += pageSize
+    }
+
+    return allProducts
+  }
+
+
+  async function fetchAllInventoryProductsForImport() {
+    if (!storeId) throw new Error('Este usuario no tiene una tienda asignada.')
+    const pageSize = 1000
+    let from = 0
+    const allProducts: Product[] = []
+    while (true) {
+      const { data, error } = await supabase
+        .from('products')
+        .select('id, name, sku, barcode, image_url, cost, sale_price, coop_price, stock, product_type, category, active, show_on_website, web_visibility, featured, short_description, slug, full_description, specs, updated_at')
+        .eq('store_id', storeId)
+        .order('created_at', { ascending: false })
+        .range(from, from + pageSize - 1)
+      if (error) throw error
+      const batch = (data || []) as Product[]
+      allProducts.push(...batch)
+      if (batch.length < pageSize) break
+      from += pageSize
+    }
+    return allProducts
+  }
+
   async function handleExportInventory() {
-    await exportInventory({
-      products,
-      format: exportFormat,
-      scope: exportScope,
-      category: exportCategory,
-    })
-    setExportModalOpen(false)
+    try {
+      const productsToExport = await fetchInventoryProductsForExport()
+      await exportInventory({
+        products: productsToExport,
+        format: exportFormat,
+        scope: exportScope,
+        category: exportCategory,
+      })
+      setExportModalOpen(false)
+      alert(`Se exportaron correctamente ${productsToExport.length} productos.`)
+    } catch (error) {
+      alert('Error exportando inventario: ' + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+  async function handleInventoryImportFile(file: File) {
+    setImportLoading(true)
+    setImportResult(null)
+    try {
+      const allProducts = await fetchAllInventoryProductsForImport()
+      const preview = await previewInventoryImport({
+        file,
+        products: allProducts,
+        categories,
+        mode: importMode,
+        unknownCategoryStrategy,
+      })
+      setImportPreview(preview)
+    } catch (error) {
+      setImportPreview({
+        headers: [],
+        rows: [],
+        criticalError: error instanceof Error ? error.message : 'Error leyendo archivo.',
+      })
+    } finally {
+      setImportLoading(false)
+    }
+  }
+
+  async function confirmInventoryImport() {
+    if (!storeId || !importPreview) return
+    setImportCommitting(true)
+    try {
+      const result = await commitInventoryImport({
+        storeId,
+        preview: importPreview,
+        mode: importMode,
+        allowBlankClear: importAllowBlankClear,
+        createCategories: unknownCategoryStrategy === 'create',
+        stockTreatment: importStockTreatment,
+      })
+      setImportResult(result)
+      await refreshInventory({ silent: true })
+    } catch (error) {
+      alert('Error importando inventario: ' + (error instanceof Error ? error.message : String(error)))
+    } finally {
+      setImportCommitting(false)
+    }
   }
 
   async function openKardex(product: Product) {
@@ -827,7 +984,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
 
     if (error) return alert('No pude reintegrar el producto: ' + error.message)
 
-    await loadData()
+    await refreshInventory({ silent: true })
   }
 
   return (
@@ -851,6 +1008,15 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
           >
             <Download size={18} />
             Exportar
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setImportModalOpen(true)}
+            className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-3 font-semibold text-emerald-700 hover:bg-emerald-100"
+          >
+            <Upload size={18} />
+            Importación
           </button>
 
           <button
@@ -920,13 +1086,13 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
         </label>
 
                 <label className="block">
-          <span className="mb-1 block text-sm font-bold text-zinc-950">Categoria</span>
+          <span className="mb-1 block text-sm font-bold text-zinc-950">Categoría</span>
           <select
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
             className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 outline-none focus:border-emerald-500"
           >
-            <option value="">Todas las categorias</option>
+            <option value="">Todas las categorías</option>
             {allCategoryNames.map((categoryName) => (
               <option key={categoryName} value={categoryName}>
                 {categoryName}
@@ -969,7 +1135,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
             </p>
           </div>
           <label className="flex items-center gap-2 text-sm font-semibold text-zinc-600">
-            Productos por pagina
+            Productos por página
             <select
               value={productsPerPage}
               onChange={(e) => setProductsPerPage(Number(e.target.value))}
@@ -997,14 +1163,14 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
                   <th className="p-3">Imagen</th>
                   <th className="p-3">Producto</th>
                   <th className="p-3">SKU</th>
-                  <th className="p-3">Categoria</th>
+                  <th className="p-3">Categoría</th>
                   <th className="p-3 text-right">Costo</th>
                   <th className="p-3 text-right">Precio venta</th>
                   <th className="p-3 text-center">Stock</th>
                   <th className="p-3 text-center">Danado</th>
                   <th className="p-3">Estado</th>
                   <th className="p-3">Actualizado</th>
-                  <th className="p-3 text-right">Acciones</th>
+                  <th className="p-3 text-right">Acciónes</th>
                 </tr>
               </thead>
               <tbody>
@@ -1071,7 +1237,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
         )}
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200 p-4 text-sm text-zinc-600">
-          <span>Pagina {inventoryPage} de {totalPages}</span>
+          <span>Página {inventoryPage} de {totalPages}</span>
           <div className="flex gap-2">
             <button
               type="button"
@@ -1119,7 +1285,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
                   <th className="p-4">Venta / Nota</th>
                   <th className="p-4">Fecha</th>
                   <th className="p-4">Estado</th>
-                  <th className="p-4 text-right">Acciones</th>
+                  <th className="p-4 text-right">Acciónes</th>
                 </tr>
               </thead>
               <tbody>
@@ -1192,7 +1358,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
                 value={form.barcode}
                 onChange={(v) => updateForm('barcode', v)}
                 onAction={regenerateBarcode}
-                actionLabel="Generar codigo de barras"
+                actionLabel="Generar código de barras"
               />
               <Input label="Costo" value={form.cost} type="number" onChange={(v) => updateForm('cost', v)} />
               <Input label="Precio venta" value={form.sale_price} type="number" onChange={(v) => updateForm('sale_price', v)} />
@@ -1205,7 +1371,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
                   value={form.category}
                   onChange={(e) => updateForm('category', e.target.value)}
                   list="product-category-options"
-                  placeholder="Selecciona o escribe una categoria"
+                  placeholder="Selecciona o escribe una categoría"
                   className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
                 />
                 <datalist id="product-category-options">
@@ -1520,7 +1686,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
                             {movement.quantity}
                           </p>
                           <p className="text-sm text-zinc-500">
-                            {movement.previous_stock} â†’ {movement.new_stock}
+                            {movement.previous_stock} → {movement.new_stock}
                           </p>
                         </div>
                       </div>
@@ -1532,6 +1698,54 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
           </div>
         </div>
       )}
+
+      <ImportModal
+        open={importModalOpen}
+        title="Importación de inventario"
+        templateName="inventario-guatapo"
+        preview={importPreview}
+        loading={importLoading}
+        committing={importCommitting}
+        mode={importMode}
+        allowBlankClear={importAllowBlankClear}
+        onModeChange={(mode) => { setImportMode(mode); setImportPreview(null); setImportResult(null) }}
+        onAllowBlankClearChange={setImportAllowBlankClear}
+        onFile={(file) => void handleInventoryImportFile(file)}
+        onConfirm={() => void confirmInventoryImport()}
+        onClose={() => setImportModalOpen(false)}
+        onDownloadTemplate={() => void downloadInventoryQuickTemplate()}
+        result={importResult}
+        description="Importa productos usando la plantilla rápida o un Excel exportado desde este módulo."
+        helpText="Solo necesitas nombre, categoría, stock, costo y precio de venta. El sistema generará automáticamente el SKU y el código de barras para productos nuevos."
+        extraOptions={
+          <div className="space-y-4">
+            <label className="block">
+              <span className="mb-1 block text-sm font-black text-zinc-700">Tratamiento del stock</span>
+              <select
+                value={importStockTreatment}
+                onChange={(event) => { setImportStockTreatment(event.target.value as InventoryStockTreatment); setImportPreview(null); setImportResult(null) }}
+                className="w-full rounded-xl border px-4 py-3"
+              >
+                <option value="add">Sumar al stock existente</option>
+                <option value="replace">Reemplazar stock</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-sm font-black text-zinc-700">Categorías desconocidas</span>
+              <select
+                value={unknownCategoryStrategy}
+                onChange={(event) => { setUnknownCategoryStrategy(event.target.value as UnknownCategoryStrategy); setImportPreview(null); setImportResult(null) }}
+                className="w-full rounded-xl border px-4 py-3"
+              >
+                <option value="cancel">Marcar como error</option>
+                <option value="create">Crear categorías automáticamente</option>
+                <option value="other">Asignar a Otros</option>
+                <option value="skip">Omitir filas con categorías desconocidas</option>
+              </select>
+            </label>
+          </div>
+        }
+      />
 
       <ExportModal
         open={exportModalOpen}
@@ -1546,6 +1760,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
             <span className="mb-1 block text-sm font-bold text-zinc-700">Alcance</span>
             <select value={exportScope} onChange={(e) => setExportScope(e.target.value as InventoryExportScope)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500">
               <option value="all">Todo el inventario</option>
+              <option value="page">Página actual</option>
               <option value="active">Solo productos activos</option>
               <option value="low">Solo stock bajo</option>
               <option value="out">Solo agotados</option>

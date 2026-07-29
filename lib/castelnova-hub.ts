@@ -1,4 +1,4 @@
-import { APP_NAME, APP_VERSION, BUILD_DATE } from '@/lib/version'
+﻿import { APP_NAME, APP_VERSION, BUILD_DATE } from '@/lib/version'
 
 export type HubStatus = 'active' | 'suspended' | 'maintenance' | 'expired'
 
@@ -59,6 +59,7 @@ export const HUB_MODULES = {
   settings: 'settings',
   audit: 'audit',
   employees: 'employees',
+  raffles: 'raffles',
 } as const
 
 export type HubModuleKey = (typeof HUB_MODULES)[keyof typeof HUB_MODULES]
@@ -67,6 +68,7 @@ const LOCAL_ONLY_MODULES = new Set<string>([
   HUB_MODULES.settings,
   HUB_MODULES.audit,
   HUB_MODULES.employees,
+  HUB_MODULES.raffles,
 ])
 
 export const ALL_HUB_MODULE_KEYS = Object.values(HUB_MODULES)
@@ -275,6 +277,7 @@ export function getHubModuleForPath(pathname: string) {
   if (pathname.startsWith('/configuracion')) return HUB_MODULES.settings
   if (pathname.startsWith('/auditoria')) return HUB_MODULES.audit
   if (pathname.startsWith('/empleados')) return HUB_MODULES.employees
+  if (pathname.startsWith('/rifas')) return HUB_MODULES.raffles
   return null
 }
 
@@ -287,3 +290,4 @@ export function isHubModuleEnabled(config: HubConfig | null | undefined, moduleN
 
   return normalized.modules_enabled[moduleName] === true
 }
+

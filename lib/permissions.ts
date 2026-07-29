@@ -14,6 +14,7 @@
   CUSTOMERS_VIEW: 'customers.view',
   CUSTOMERS_MANAGE: 'customers.manage',
   EMPLOYEES_MANAGE: 'employees.manage',
+  RAFFLES_MANAGE: 'raffles.manage',
   PURCHASES_MANAGE: 'purchases.manage',
   COOPERATIVES_MANAGE: 'cooperatives.manage',
   WEB_MANAGE: 'web.manage',
@@ -48,6 +49,7 @@ export const PERMISSION_GROUPS: { title: string; items: { key: PermissionKey; la
       { key: PERMISSIONS.CUSTOMERS_VIEW, label: 'Ver clientes' },
       { key: PERMISSIONS.CUSTOMERS_MANAGE, label: 'Gestionar clientes' },
       { key: PERMISSIONS.EMPLOYEES_MANAGE, label: 'Administrar empleados' },
+      { key: PERMISSIONS.RAFFLES_MANAGE, label: 'Gestionar rifas' },
       { key: PERMISSIONS.PURCHASES_MANAGE, label: 'Gestionar compras' },
       { key: PERMISSIONS.COOPERATIVES_MANAGE, label: 'Gestionar cooperativas' },
     ],
@@ -82,6 +84,7 @@ const ROLE_DEFAULTS: Record<string, PermissionKey[]> = {
     PERMISSIONS.CUSTOMERS_VIEW,
     PERMISSIONS.CUSTOMERS_MANAGE,
     PERMISSIONS.EMPLOYEES_MANAGE,
+    PERMISSIONS.RAFFLES_MANAGE,
     PERMISSIONS.PURCHASES_MANAGE,
     PERMISSIONS.COOPERATIVES_MANAGE,
     PERMISSIONS.AUDIT_VIEW,
@@ -184,6 +187,7 @@ export function getRoleLabel(role?: string | null) {
 export function allPermissionKeys() {
   return [...ALL_PERMISSIONS]
 }
+
 
 
 

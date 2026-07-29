@@ -343,28 +343,42 @@ export default function CambiosPage() {
     setSaving(true)
 
     let exchangeId: string | null = null
-    const { data: exchangeData, error: exchangeError } = await supabase
+    const exchangePayload = {
+      store_id: storeId,
+      sale_id: sale.id,
+      reason: exchangeReason || 'Cambio de producto',
+      reason_other: exchangeReasonOther.trim() || null,
+      notes: exchangeNotes.trim() || null,
+      returned_total: returnedTotal,
+      replacement_total: replacementTotal,
+      difference: difference,
+      difference_total: difference,
+      exchange_type: difference > 0 ? 'customer_pays' : difference < 0 ? 'credit_balance' : 'even_exchange',
+      payment_status: difference > 0 ? 'paid' : 'not_required',
+      payment_method_id: difference > 0 && !paymentMethodId.startsWith('virtual:')
+        ? paymentMethodId
+        : null,
+      status: 'completed',
+    }
+
+    let exchangeResult = await supabase
       .from('product_exchanges')
-      .insert({
-        store_id: storeId,
-        sale_id: sale.id,
-        reason: exchangeReason || 'Cambio de producto',
-        reason_other: exchangeReasonOther.trim() || null,
-        notes: exchangeNotes.trim() || null,
-        returned_total: returnedTotal,
-        replacement_total: replacementTotal,
-        difference_total: difference,
-        payment_method_id: difference > 0 && !paymentMethodId.startsWith('virtual:')
-          ? paymentMethodId
-          : null,
-        status: 'completed',
-      })
+      .insert(exchangePayload)
       .select('id')
       .maybeSingle()
 
-    if (exchangeError) return finishWithError(exchangeError.message)
+    if (exchangeResult.error && exchangeResult.error.message.includes('difference_total')) {
+      const { difference_total, exchange_type, payment_status, ...legacyPayload } = exchangePayload
+      exchangeResult = await supabase
+        .from('product_exchanges')
+        .insert(legacyPayload)
+        .select('id')
+        .maybeSingle()
+    }
 
-    exchangeId = exchangeData?.id || null
+    if (exchangeResult.error) return finishWithError(exchangeResult.error.message)
+
+    exchangeId = exchangeResult.data?.id || null
 
     for (const item of returnedItems) {
       const restockQty = Number(returnRestockQuantities[item.id] || 0)
@@ -375,22 +389,6 @@ export default function CambiosPage() {
       const nextDiscount = discountPerUnit * remainingQty
       const nextTotal = Math.max(0, Number(item.unit_price || 0) * remainingQty - nextDiscount)
 
-      if (remainingQty <= 0) {
-        const { error } = await supabase.from('sale_items').delete().eq('store_id', storeId).eq('id', item.id)
-        if (error) return finishWithError(error.message)
-      } else {
-        const { error } = await supabase
-          .from('sale_items')
-          .update({
-            quantity: remainingQty,
-            discount: nextDiscount,
-            total: nextTotal,
-          })
-          .eq('store_id', storeId)
-          .eq('id', item.id)
-
-        if (error) return finishWithError(error.message)
-      }
 
       if (item.product_id && restockQty > 0) {
         const product = products.find((p) => p.id === item.product_id)
@@ -420,7 +418,7 @@ export default function CambiosPage() {
 
       if (item.product_id && damagedQty > 0) {
         const product = products.find((p) => p.id === item.product_id)
-        const { error: damagedError } = await supabase.from('damaged_inventory').insert({
+        const damagedPayload = {
           store_id: storeId,
           product_id: item.product_id,
           sale_id: sale.id,
@@ -432,9 +430,17 @@ export default function CambiosPage() {
           reason_other: exchangeReasonOther.trim() || null,
           notes: exchangeNotes.trim() || null,
           original_stock: Number(product?.stock || 0),
-          status: 'damaged',
-        })
-        if (damagedError) return finishWithError(damagedError.message)
+          status: 'pending_review',
+        }
+
+        let damagedResult = await supabase.from('damaged_inventory').insert(damagedPayload)
+
+        if (damagedResult.error && (damagedResult.error.message.includes('original_stock') || damagedResult.error.message.includes('sale_item_id') || damagedResult.error.message.includes('reason_other'))) {
+          const { original_stock, sale_item_id, reason_other, ...legacyDamagedPayload } = damagedPayload
+          damagedResult = await supabase.from('damaged_inventory').insert(legacyDamagedPayload)
+        }
+
+        if (damagedResult.error) return finishWithError(damagedResult.error.message)
 
         const { error: damagedMovementError } = await supabase.from('inventory_movements').insert({
           store_id: storeId,
@@ -449,6 +455,26 @@ export default function CambiosPage() {
           reason: exchangeReason,
         })
         if (damagedMovementError) return finishWithError(damagedMovementError.message)
+      }
+
+      // La factura se modifica al final de cada producto devuelto. Si falla inventario o danado,
+      // conservamos intactos los productos comprados para que el cambio pueda reintentarse.
+
+      if (remainingQty <= 0) {
+        const { error } = await supabase.from('sale_items').delete().eq('store_id', storeId).eq('id', item.id)
+        if (error) return finishWithError(error.message)
+      } else {
+        const { error } = await supabase
+          .from('sale_items')
+          .update({
+            quantity: remainingQty,
+            discount: nextDiscount,
+            total: nextTotal,
+          })
+          .eq('store_id', storeId)
+          .eq('id', item.id)
+
+        if (error) return finishWithError(error.message)
       }
     }
 
@@ -658,6 +684,11 @@ export default function CambiosPage() {
               </div>
 
               <div className="divide-y divide-zinc-100">
+                {saleItems.length === 0 && (
+                  <div className="p-5 text-sm font-semibold text-amber-700">
+                    Esta factura no tiene productos disponibles para cambio. Si esto ocurrio despues de un intento fallido, revisa la venta original antes de guardar otro cambio.
+                  </div>
+                )}
                 {saleItems.map((item) => (
                   <div key={item.id} className="p-5">
                     <div className="flex justify-between gap-4">

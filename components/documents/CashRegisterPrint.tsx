@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
@@ -44,7 +44,9 @@ export default function CashRegisterPrint() {
     card: 0,
     transfer: 0,
     cashRefunds: 0,
+    withdrawals: 0,
     expectedCash: 0,
+    creditNote: 0,
   })
   const [loading, setLoading] = useState(true)
 
@@ -77,6 +79,17 @@ export default function CashRegisterPrint() {
       })
     }
 
+    let detailedPayments: { sale_id: string | null; payment_method: string | null; amount: number | null; card_fee: number | null }[] = []
+
+    if (saleIds.length > 0) {
+      const { data: paymentRows } = await supabase
+        .from('sale_payments')
+        .select('sale_id, payment_method, amount, card_fee')
+        .in('sale_id', saleIds)
+
+      detailedPayments = paymentRows || []
+    }
+
     let refunds: { total: number; refund_method: string | null }[] = []
 
     if (saleIds.length > 0) {
@@ -88,11 +101,22 @@ export default function CashRegisterPrint() {
       refunds = refundRows || []
     }
 
+    let movements: { movement_type: string | null; amount: number | null }[] = []
+
+    const { data: movementsData, error: movementsError } = await supabase
+      .from('cash_movements')
+      .select('movement_type, amount')
+      .eq('cash_register_id', register.id)
+
+    if (!movementsError) movements = movementsData || []
+
     const totals = calculateCashRegisterTotals({
       openingAmount: Number(register.opening_amount || 0),
       countedCash: Number(register.closing_amount || 0),
       sales,
       refunds,
+      movements,
+      payments: detailedPayments,
       paymentMethods: methodMap,
     })
 
@@ -101,7 +125,9 @@ export default function CashRegisterPrint() {
       card: totals.cardSales,
       transfer: totals.transferSales,
       cashRefunds: totals.cashRefunds,
+      withdrawals: totals.cashWithdrawals,
       expectedCash: totals.expectedCash,
+      creditNote: totals.creditSales,
     })
   }
 
@@ -134,7 +160,7 @@ export default function CashRegisterPrint() {
   }
 
   if (!cash) {
-    return <main className="p-6">No se encontrÃ³ el cuadre.</main>
+    return <main className="p-6">No se encontró el cuadre.</main>
   }
 
   return (
@@ -172,7 +198,9 @@ export default function CashRegisterPrint() {
           <Row label="Ventas en efectivo" value={formatMoney(paymentBreakdown.cash)} />
           <Row label="Ventas con tarjeta" value={formatMoney(paymentBreakdown.card)} />
           <Row label="Ventas por transferencia" value={formatMoney(paymentBreakdown.transfer)} />
+          <Row label="Nota de credito" value={formatMoney(paymentBreakdown.creditNote)} />
           <Row label="Devoluciones en efectivo" value={formatMoney(paymentBreakdown.cashRefunds)} />
+          <Row label="Retiros de efectivo" value={formatMoney(paymentBreakdown.withdrawals)} />
           <Row label="Comision tarjeta" value={formatMoney(cash.total_card_fee)} />
           <Row label="Ganancia estimada" value={formatMoney(cash.total_profit)} />
           <Row label="Efectivo contado" value={formatMoney(cash.closing_amount || 0)} />
@@ -189,7 +217,7 @@ export default function CashRegisterPrint() {
         <Divider />
 
         <div className="text-center">
-          <p className="font-bold">Firma / Validacion</p>
+          <p className="font-bold">Firma / Validación</p>
           <div className="mx-auto mt-8 w-48 border-t border-black" />
           <p className="mt-2">Cajero</p>
         </div>

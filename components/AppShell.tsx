@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
@@ -23,6 +23,7 @@ import {
   Users,
   CalendarDays,
   WalletCards,
+  Ticket,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { mergePermissions, PERMISSIONS, type PermissionMap, type PermissionKey } from '@/lib/permissions'
@@ -72,6 +73,7 @@ export default function AppShell({
   const [hubConfig, setHubConfig] = useState<HubConfig>(DEFAULT_HUB_CONFIG)
   const [hubNotice, setHubNotice] = useState('')
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [pendingRafflePayments, setPendingRafflePayments] = useState(0)
   const [context, setContext] = useState<StoreContext>({
     platformName: 'CastelNova ERP',
     storeName: 'Guatapo SRL',
@@ -139,10 +141,12 @@ export default function AppShell({
 
     loadHubConfig()
     loadCashStatus()
+    loadPendingRafflePayments()
 
-    const refresh = () => loadCashStatus()
+    const refresh = () => { loadCashStatus(); loadPendingRafflePayments() }
     const refreshHub = () => loadHubConfig()
     const hubInterval = window.setInterval(loadHubConfig, 60000)
+    const raffleInterval = window.setInterval(loadPendingRafflePayments, 30000)
     const interval = window.setInterval(refresh, 15000)
 
     window.addEventListener('focus', refresh)
@@ -151,6 +155,7 @@ export default function AppShell({
 
     return () => {
       window.clearInterval(hubInterval)
+      window.clearInterval(raffleInterval)
       window.clearInterval(interval)
       window.removeEventListener('focus', refresh)
       window.removeEventListener('focus', refreshHub)
@@ -302,6 +307,30 @@ export default function AppShell({
       console.error('Error cargando contexto del sistema', error)
     } finally {
       setAuthLoading(false)
+    }
+  }
+
+  async function loadPendingRafflePayments() {
+    if (!currentStoreId) {
+      setPendingRafflePayments(0)
+      return
+    }
+
+    try {
+      const { count, error } = await supabase
+        .from('raffle_payments')
+        .select('id', { count: 'exact', head: true })
+        .eq('store_id', currentStoreId)
+        .in('status', ['pending', 'correction'])
+
+      if (error) {
+        setPendingRafflePayments(0)
+        return
+      }
+
+      setPendingRafflePayments(count || 0)
+    } catch {
+      setPendingRafflePayments(0)
     }
   }
 
@@ -470,6 +499,14 @@ export default function AppShell({
       text: 'Empleados',
       permission: PERMISSIONS.EMPLOYEES_MANAGE,
       moduleKey: HUB_MODULES.employees,
+    },
+    {
+      href: '/rifas',
+      icon: <Ticket size={18} />,
+      text: 'Rifas',
+      badge: pendingRafflePayments,
+      permission: PERMISSIONS.RAFFLES_MANAGE,
+      moduleKey: HUB_MODULES.raffles,
     },
     {
       href: '/configuracion/web',
@@ -692,7 +729,7 @@ export default function AppShell({
 
         <nav className="mt-6 space-y-1 pb-8">
           {sidebarItems.map((item) => (
-            <MenuItem key={item.href} href={item.href} icon={item.icon} text={item.text} />
+            <MenuItem key={item.href} href={item.href} icon={item.icon} text={item.text} badge={'badge' in item ? item.badge : 0} />
           ))}
 
           <button
@@ -789,10 +826,12 @@ function MenuItem({
   href,
   icon,
   text,
+  badge = 0,
 }: {
   href: string
   icon: React.ReactNode
   text: string
+  badge?: number
 }) {
   const pathname = usePathname()
   const active = pathname === href
@@ -807,10 +846,12 @@ function MenuItem({
       }`}
     >
       {icon}
-      <span>{text}</span>
+      <span className="min-w-0 flex-1">{text}</span>
+      {badge > 0 && <span className="rounded-full bg-red-600 px-2 py-0.5 text-xs font-black text-white">{badge}</span>}
     </Link>
   )
 }
+
 
 
 

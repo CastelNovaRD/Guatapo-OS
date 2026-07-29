@@ -1,9 +1,22 @@
 export type CashRegisterSale = {
+  id?: string | null
   total: number | null
   card_fee?: number | null
   cash_received?: number | null
   cash_change?: number | null
   payment_method_id?: string | null
+}
+
+export type CashRegisterSalePayment = {
+  sale_id?: string | null
+  payment_method?: string | null
+  amount?: number | null
+  card_fee?: number | null
+}
+
+export type CashRegisterMovement = {
+  movement_type?: string | null
+  amount?: number | null
 }
 
 export type CashRegisterRefund = {
@@ -26,6 +39,8 @@ export type CashRegisterTotals = {
   cashRefunds: number
   cardRefunds: number
   transferRefunds: number
+  cashWithdrawals: number
+  cashDeposits: number
   totalCardFee: number
   difference: number
 }
@@ -38,11 +53,13 @@ export function getPaymentKind(
   sale: CashRegisterSale,
   paymentMethods: Map<string, string>
 ): 'cash' | 'card' | 'transfer' | 'credit' {
+  const methodId = normalize(sale.payment_method_id)
   const methodName = sale.payment_method_id ? normalize(paymentMethods.get(sale.payment_method_id)) : ''
+  const methodText = methodId + ' ' + methodName
 
-  if (methodName.includes('efectivo') || Number(sale.cash_received || 0) > 0) return 'cash'
-  if (methodName.includes('tarjeta')) return 'card'
-  if (methodName.includes('credito') || methodName.includes('crédito')) return 'credit'
+  if (methodText.includes('efectivo') || Number(sale.cash_received || 0) > 0) return 'cash'
+  if (methodText.includes('tarjeta') || methodText.includes('card') || Number(sale.card_fee || 0) > 0) return 'card'
+  if (methodText.includes('credito') || methodText.includes('credit')) return 'credit'
 
   return 'transfer'
 }
@@ -52,7 +69,7 @@ export function getRefundKind(refundMethod: string | null | undefined): 'cash' |
 
   if (method.includes('efectivo')) return 'cash'
   if (method.includes('tarjeta')) return 'card'
-  if (method.includes('credito') || method.includes('crédito')) return 'credit'
+  if (method.includes('credito') || method.includes('credit')) return 'credit'
 
   return 'transfer'
 }
@@ -62,12 +79,16 @@ export function calculateCashRegisterTotals({
   countedCash,
   sales,
   refunds = [],
+  movements = [],
+  payments = [],
   paymentMethods,
 }: {
   openingAmount: number
   countedCash: number
   sales: CashRegisterSale[]
   refunds?: CashRegisterRefund[]
+  movements?: CashRegisterMovement[]
+  payments?: CashRegisterSalePayment[]
   paymentMethods: Map<string, string>
 }): CashRegisterTotals {
   const totals: CashRegisterTotals = {
@@ -80,11 +101,43 @@ export function calculateCashRegisterTotals({
     cashRefunds: 0,
     cardRefunds: 0,
     transferRefunds: 0,
+    cashWithdrawals: 0,
+    cashDeposits: 0,
     totalCardFee: 0,
     difference: 0,
   }
 
+  const salesWithDetailedPayments = new Set(
+    payments.map((payment) => payment.sale_id).filter(Boolean)
+  )
+
+  for (const payment of payments) {
+    const amount = Number(payment.amount || 0)
+    const cardFee = Number(payment.card_fee || 0)
+    const method = normalize(payment.payment_method)
+
+    if (amount <= 0) continue
+
+    totals.totalCardFee += cardFee
+
+    if (method === 'cash') {
+      totals.cashSales += amount
+      totals.businessSales += amount
+      totals.expectedCash += amount
+    } else if (method === 'card') {
+      totals.cardSales += amount
+      totals.businessSales += amount
+    } else if (method === 'credit_note') {
+      totals.creditSales += amount
+    } else {
+      totals.transferSales += amount
+      totals.businessSales += amount
+    }
+  }
+
   for (const sale of sales) {
+    if (sale.id && salesWithDetailedPayments.has(sale.id)) continue
+
     const total = Number(sale.total || 0)
     const cardFee = Number(sale.card_fee || 0)
     const businessTotal = Math.max(0, total - cardFee)
@@ -119,6 +172,19 @@ export function calculateCashRegisterTotals({
       totals.cardRefunds += total
     } else if (kind === 'transfer') {
       totals.transferRefunds += total
+    }
+  }
+
+  for (const movement of movements) {
+    const amount = Number(movement.amount || 0)
+    const type = normalize(movement.movement_type)
+
+    if (type === 'withdrawal') {
+      totals.cashWithdrawals += amount
+      totals.expectedCash -= amount
+    } else if (type === 'deposit') {
+      totals.cashDeposits += amount
+      totals.expectedCash += amount
     }
   }
 

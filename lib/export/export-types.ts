@@ -32,7 +32,7 @@ export type ExportDocument<T = Record<string, unknown>> = {
   orientation?: 'portrait' | 'landscape'
 }
 
-export type InventoryExportScope = 'all' | 'active' | 'low' | 'out' | 'category'
+export type InventoryExportScope = 'all' | 'page' | 'active' | 'low' | 'out' | 'category'
 export type CustomerExportScope = 'all' | 'customer' | 'fiscal' | 'partner'
 export type SalesExportPeriod = 'day' | 'month' | 'year' | 'custom'
 export type SalesExportChannel = 'all' | 'pos' | 'cooperative' | 'quotation'
