@@ -47,6 +47,28 @@ type RaffleForm = {
   status: Raffle['status']
 }
 
+const RESERVED_PUBLIC_RAFFLE_SLUGS = new Set([
+  'admin',
+  'api',
+  'auditoria',
+  'caja',
+  'clientes',
+  'compras',
+  'configuracion',
+  'cooperativas',
+  'cotizaciones',
+  'cuadres',
+  'cuentas-por-cobrar',
+  'empleados',
+  'inventario',
+  'login',
+  'pos',
+  'reportes',
+  'rifas',
+  'ventas',
+  'web',
+])
+
 const emptyForm: RaffleForm = {
   internal_name: '', public_title: '', promotional_title: '', promotional_highlight: '', promotional_highlight_color: 'green', slug: '', description: '', detailed_description: '', prize_value: '', ticket_price: '', min_tickets_per_purchase: '1', start_at: '', end_at: '', status: 'draft',
 }
@@ -337,13 +359,25 @@ export default function RafflesPage() {
     if (Number(form.min_tickets_per_purchase || 0) <= 0) return alert('La compra minima debe ser mayor que 0.')
     setSaving(true)
     const { data: userData } = await supabase.auth.getUser()
+    const publicSlug = slugify(form.slug || form.public_title)
+    if (!publicSlug) { setSaving(false); return alert('El slug publico no es valido.') }
+    if (RESERVED_PUBLIC_RAFFLE_SLUGS.has(publicSlug)) {
+      setSaving(false)
+      return alert('Ese slug esta reservado por el sistema. Usa otro slug publico para la rifa.')
+    }
+    const duplicateSlug = raffles.find((raffle) => raffle.slug === publicSlug && raffle.id !== editing?.id)
+    if (duplicateSlug) {
+      setSaving(false)
+      return alert('Ya existe una rifa con ese slug publico. Usa otro slug.')
+    }
+
     const payload = {
       store_id: storeId,
       internal_name: form.internal_name.trim(),
       public_title: form.public_title.trim(),
       promotional_title: form.promotional_title.trim() || form.public_title.trim(),
       promotional_title_segments: buildTitleSegments(form.promotional_title || form.public_title, form.promotional_highlight, form.promotional_highlight_color),
-      slug: slugify(form.slug || form.public_title),
+      slug: publicSlug,
       description: form.description.trim() || null,
       detailed_description: form.detailed_description.trim() || null,
       prize_value: Number(form.prize_value || 0),
@@ -639,7 +673,7 @@ ${hasActivity ? 'Esta rifa tiene participantes/pagos. Se eliminaran boletos, pag
                   <Link className="rounded-xl bg-zinc-950 px-4 py-2 font-bold text-white" href={`/rifas/admin/${raffle.id}`}><Eye size={16} className="mr-1 inline"/>Ver</Link>
                   <button className="rounded-xl border px-4 py-2 font-bold" onClick={() => openEdit(raffle)}><Pencil size={16} className="mr-1 inline"/>Editar</button>
                   <Link className="rounded-xl border px-4 py-2 font-bold" href={`/rifas/admin/${raffle.id}#participantes`}><Users size={16} className="mr-1 inline"/>Participantes</Link>
-                  <Link className="rounded-xl border px-4 py-2 font-bold" href={`/rifas/${raffle.slug}`} target="_blank">Pagina publica</Link>
+                  <Link className="rounded-xl border px-4 py-2 font-bold" href={`/${raffle.slug}`} target="_blank">Pagina publica</Link>
                   <Link className="rounded-xl border px-4 py-2 font-bold" href={`/rifas/admin/${raffle.id}/ruleta`} target="_blank"><Shuffle size={16} className="mr-1 inline"/>ABRIR RULETA</Link>
                   <label className="cursor-pointer rounded-xl border px-4 py-2 font-bold"><ImagePlus size={16} className="mr-1 inline"/>Imagenes<input type="file" accept="image/*" multiple className="hidden" onChange={(event) => void uploadImages(raffle, event.target.files)} /></label>
                   <button className="rounded-xl border border-red-200 px-4 py-2 font-bold text-red-600" onClick={() => void finishRaffle(raffle)}><Trophy size={16} className="mr-1 inline"/>Finalizar</button>
