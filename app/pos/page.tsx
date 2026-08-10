@@ -226,6 +226,7 @@ export default function POSPage() {
   const [fiscalQuoteCustomerId, setFiscalQuoteCustomerId] = useState<string | null>(null)
   const [shippingCost, setShippingCost] = useState('')
   const [fiscalSale, setFiscalSale] = useState(false)
+  const [fiscalPaymentPending, setFiscalPaymentPending] = useState(false)
   const [taxPercent, setTaxPercent] = useState('0')
   const [fiscalReceiptType, setFiscalReceiptType] = useState('B01')
   const [availableNcf, setAvailableNcf] = useState<AvailableNcf | null>(null)
@@ -267,6 +268,7 @@ export default function POSPage() {
 
   const searchRef = useRef<HTMLInputElement>(null)
   const productsFetchInFlightRef = useRef(false)
+  const pendingProductsFetchRef = useRef<null | { storeId: string; limit: number; options: { showLoading?: boolean } }>(null)
 
   useEffect(() => {
     loadAll()
@@ -363,17 +365,23 @@ export default function POSPage() {
   }
 
   async function loadPosProducts(currentStoreId = storeId, limit = posFeaturedProductsLimit, options: { showLoading?: boolean } = {}) {
-    if (!currentStoreId || productsFetchInFlightRef.current) return
+    if (!currentStoreId) return
+
+    if (productsFetchInFlightRef.current) {
+      pendingProductsFetchRef.current = { storeId: currentStoreId, limit, options }
+      return
+    }
 
     productsFetchInFlightRef.current = true
     const showLoading = options.showLoading ?? products.length === 0
+    const activeCategoryFilter = categoryFilter
     if (showLoading) setProductsLoading(true)
 
     try {
-      const cleanSearch = debouncedSearch.replace(/[%_]/g, '').trim()
+      const cleanSearch = debouncedSearch.replace(/[%,_]/g, '').trim()
       let productsData: Product[] = []
 
-      if (!cleanSearch && !categoryFilter) {
+      if (!cleanSearch && !activeCategoryFilter) {
         const { data, error } = await supabase.rpc('get_pos_featured_products', {
           p_store_id: currentStoreId,
           p_limit: limit,
@@ -405,16 +413,17 @@ export default function POSPage() {
           query = query.or(`name.ilike.%${cleanSearch}%,sku.ilike.%${cleanSearch}%,barcode.ilike.%${cleanSearch}%,category.ilike.%${cleanSearch}%`)
         }
 
-        if (categoryFilter) query = query.eq('category', categoryFilter)
+        if (activeCategoryFilter) query = query.eq('category', activeCategoryFilter)
 
         const { data } = await query.order('name').limit(50)
         productsData = data || []
       }
 
-      setProducts(productsData)
+      const shouldApplyResult = !pendingProductsFetchRef.current
+      if (shouldApplyResult) setProducts(productsData)
 
       const productIds = productsData.map((product) => product.id)
-      if (productIds.length > 0) {
+      if (shouldApplyResult && productIds.length > 0) {
         const { data: imagesData } = await supabase
           .from('product_images')
           .select('id, product_id, image_url, is_primary, sort_order')
@@ -423,12 +432,18 @@ export default function POSPage() {
           .order('sort_order')
 
         setProductImages(imagesData || [])
-      } else if (showLoading) {
+      } else if (shouldApplyResult && showLoading) {
         setProductImages([])
       }
     } finally {
       if (showLoading) setProductsLoading(false)
       productsFetchInFlightRef.current = false
+
+      const pendingFetch = pendingProductsFetchRef.current
+      if (pendingFetch) {
+        pendingProductsFetchRef.current = null
+        void loadPosProducts(pendingFetch.storeId, pendingFetch.limit, pendingFetch.options)
+      }
     }
   }
 
@@ -547,12 +562,12 @@ function getProductMainImage(product: Product) {
       ;(methodRows || []).forEach((method) => paymentMethodMap.set(method.id, method.name || ''))
     }
 
-    let creditNoteRefunds: { total: number; refund_method: string | null }[] = []
+    let creditNoteRefunds: { sale_id: string | null; total: number; refund_method: string | null }[] = []
 
     if (saleIds.length > 0) {
       const { data: refundRows } = await supabase
         .from('credit_notes')
-        .select('total, refund_method')
+        .select('sale_id, total, refund_method')
         .eq('store_id', storeId)
         .in('sale_id', saleIds)
 
@@ -915,7 +930,25 @@ function getProductMainImage(product: Product) {
     return Array.from(names).sort((a, b) => a.localeCompare(b))
   }, [productCategories, products])
 
-  const filteredProducts = products
+  const filteredProducts = useMemo(() => {
+    const query = search.trim().toLowerCase()
+    if (!query) return products
+
+    const queryDigits = query.replace(/\D/g, '')
+
+    return products.filter((product) => {
+      const searchableText = [product.name, product.sku, product.barcode, product.category]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+      const searchableDigits = [product.sku, product.barcode]
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\D/g, '')
+
+      return searchableText.includes(query) || (queryDigits.length > 0 && searchableDigits.includes(queryDigits))
+    })
+  }, [products, search])
 
   const requiresCustomer = cart.some((item) =>
     ['phone', 'tablet', 'laptop'].includes(item.product_type)
@@ -932,8 +965,9 @@ function getProductMainImage(product: Product) {
   )
 
   const selectedPaymentName = selectedPaymentMethod?.name?.toLowerCase() || ''
-  const isCreditNotePayment = paymentMethodId === 'virtual:credit-note' || selectedPaymentName.includes('nota de credito')
-  const isCardPayment = !isCreditNotePayment && (selectedPaymentName.includes('tarjeta') || paymentMethodId.includes('card'))
+  const isSalePendingPayment = fiscalSale && fiscalPaymentPending
+  const isCreditNotePayment = !isSalePendingPayment && (paymentMethodId === 'virtual:credit-note' || selectedPaymentName.includes('nota de credito'))
+  const isCardPayment = !isSalePendingPayment && !isCreditNotePayment && (selectedPaymentName.includes('tarjeta') || paymentMethodId.includes('card'))
   const selectedRemainderPaymentMethod = paymentMethods.find(
     (method) => method.id === creditNoteRemainderMethodId
   )
@@ -968,8 +1002,8 @@ function getProductMainImage(product: Product) {
     return 0
   }, [subtotal, taxAmount, isCardPayment, isCreditNotePayment, isRemainderCardPayment, creditNoteRemainingTotal])
 
-  const netReceived = isCreditNotePayment ? Math.max(0, creditNoteRemainingTotal - cardFee) : total - cardFee
-  const isCashPayment = !isCreditNotePayment && selectedPaymentName.includes('efectivo')
+  const netReceived = isSalePendingPayment ? 0 : isCreditNotePayment ? Math.max(0, creditNoteRemainingTotal - cardFee) : total - cardFee
+  const isCashPayment = !isSalePendingPayment && !isCreditNotePayment && selectedPaymentName.includes('efectivo')
   const changeAmount = isCreditNotePayment && isRemainderCashPayment
     ? Number(creditNoteRemainderCashReceived || 0) - creditNoteRemainingTotal
     : Number(cashReceived || 0) - total
@@ -1342,6 +1376,7 @@ function getProductMainImage(product: Product) {
     setCustomerLookupMessage('')
     setShippingCost('')
     setFiscalSale(false)
+    setFiscalPaymentPending(false)
     setAvailableNcf(null)
     setFiscalCustomerName('')
     setFiscalCustomerRnc('')
@@ -1526,7 +1561,7 @@ function getProductMainImage(product: Product) {
       .from('sales')
       .insert({
         store_id: storeId,
-        cash_register_id: openCash.id,
+        cash_register_id: isSalePendingPayment ? null : openCash.id,
         customer_id: customerId,
         sale_channel: 'pos',
         subtotal,
@@ -1534,12 +1569,14 @@ function getProductMainImage(product: Product) {
         itbis: taxAmount,
         total,
         shipping_cost: shipping,
-        payment_method_id: paymentMethodForSale.startsWith('virtual:') ? null : paymentMethodForSale || null,
-        card_fee: cardFee,
+        payment_method_id: isSalePendingPayment ? null : paymentMethodForSale.startsWith('virtual:') ? null : paymentMethodForSale || null,
+        card_fee: isSalePendingPayment ? 0 : cardFee,
         net_received: netReceived,
-        cash_received: receivedForSale,
-        cash_change: changeForSale,
-        status: 'paid',
+        cash_received: isSalePendingPayment ? 0 : receivedForSale,
+        cash_change: isSalePendingPayment ? 0 : changeForSale,
+        amount_paid: isSalePendingPayment ? 0 : total,
+        balance_due: isSalePendingPayment ? total : 0,
+        status: isSalePendingPayment ? 'pending' : 'paid',
         ncf: fiscalSale ? availableNcf?.ncf : null,
         fiscal_receipt_type: fiscalSale ? fiscalReceiptType : null,
         fiscal_status: fiscalSale ? 'ready_to_send' : 'not_applicable',
@@ -1603,7 +1640,7 @@ function getProductMainImage(product: Product) {
       })
     }
 
-    if (salePaymentRows.length > 0) {
+    if (!isSalePendingPayment && salePaymentRows.length > 0) {
       const { error: paymentsError } = await supabase
         .from('sale_payments')
         .insert(salePaymentRows)
@@ -1703,8 +1740,8 @@ function getProductMainImage(product: Product) {
       action: fiscalSale ? 'sale.fiscal.create' : 'sale.quick.create',
       entityType: 'sale',
       entityId: sale.id,
-      summary: `Venta POS ${sale.invoice_number || sale.id} por ${total}.`,
-      afterData: { invoiceNumber: sale.invoice_number, total, subtotal, taxAmount, cardFee, shipping, ncf: fiscalSale ? availableNcf?.ncf : null },
+      summary: `${isSalePendingPayment ? 'Factura pendiente' : 'Venta POS'} ${sale.invoice_number || sale.id} por ${total}.`,
+      afterData: { invoiceNumber: sale.invoice_number, total, subtotal, taxAmount, cardFee: isSalePendingPayment ? 0 : cardFee, shipping, pendingPayment: isSalePendingPayment, ncf: fiscalSale ? availableNcf?.ncf : null },
     })
 
     setLastInvoice({
@@ -2152,6 +2189,7 @@ function getProductMainImage(product: Product) {
                   }
                   if (!checked) {
                     setTaxPercent('0')
+                    setFiscalPaymentPending(false)
                     setAvailableNcf(null)
                   }
                 }}
@@ -2320,6 +2358,24 @@ function getProductMainImage(product: Product) {
                     Actualizar NCF
                   </button>
                 </div>
+
+                <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 font-bold text-amber-900">
+                  <input
+                    type="checkbox"
+                    checked={fiscalPaymentPending}
+                    onChange={(event) => {
+                      setFiscalPaymentPending(event.target.checked)
+                      if (event.target.checked) resetCreditNotePayment()
+                    }}
+                    className="mt-1 h-5 w-5 accent-amber-600"
+                  />
+                  <span>
+                    Facturar como pendiente de pago
+                    <span className="block text-sm font-semibold text-amber-800">
+                      Para clientes con credito. La factura queda en cuentas por cobrar y no entra al cierre como dinero recibido.
+                    </span>
+                  </span>
+                </label>
 
               </div>
             )}
@@ -2892,6 +2948,7 @@ function CloseRegisterModal({
           <BigRow label="Nota de credito" value={summary?.creditNotePayments || 0} />
           <BigRow label="Tarjetas" value={summary?.cardSales || 0} />
           <BigRow label="Devoluciones en efectivo" value={summary?.cashRefunds || 0} />
+          <BigRow label="Retiros de caja" value={summary?.cashWithdrawals || 0} />
           <BigRow label="Efectivo esperado" value={expectedCash} />
         </div>
 

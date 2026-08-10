@@ -154,6 +154,8 @@ type ProductForm = {
   ram: string
   camera: string
   battery: string
+  gpu: string
+  os: string
   web_discount_percent: string
 }
 
@@ -181,7 +183,55 @@ const emptyForm: ProductForm = {
   ram: '',
   camera: '',
   battery: '',
+  gpu: '',
+  os: '',
   web_discount_percent: '',
+}
+
+type ProductSpecMode = 'computer' | 'mobile' | 'none'
+
+function normalizeSpecText(value?: string | null) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+}
+
+function getProductSpecMode(productType?: string | null, category?: string | null): ProductSpecMode {
+  const text = `${normalizeSpecText(productType)} ${normalizeSpecText(category)}`
+
+  if (/(laptop|computadora|computador|computer|desktop|pc)/.test(text)) return 'computer'
+  if (/(phone|celular|movil|mobile|tablet|tableta)/.test(text)) return 'mobile'
+
+  return 'none'
+}
+
+function buildProductSpecs(form: ProductForm) {
+  const mode = getProductSpecMode(form.product_type, form.category)
+  const specs: ProductSpecs = {
+    web_discount_percent: String(Math.min(100, Math.max(0, Number(form.web_discount_percent || 0)))),
+  }
+
+  if (mode === 'computer' || mode === 'mobile') {
+    specs.cpu = form.cpu.trim()
+    specs.storage = form.storage.trim()
+    specs.ram = form.ram.trim()
+    specs.display = form.display.trim()
+  }
+
+  if (mode === 'computer') {
+    specs.gpu = form.gpu.trim()
+    specs.os = form.os.trim()
+    specs.camera = ''
+    specs.battery = ''
+  } else if (mode === 'mobile') {
+    specs.battery = form.battery.trim()
+    specs.camera = form.camera.trim()
+    specs.gpu = ''
+    specs.os = ''
+  }
+
+  return specs
 }
 
 function ean13CheckDigit(base12: string) {
@@ -500,6 +550,7 @@ function getProductMainImage(product: Product) {
   const lowStock = activeProducts.filter((p) => p.stock > 0 && p.stock <= 2)
   const outOfStock = activeProducts.filter((p) => p.stock <= 0)
   const damagedQuantity = damagedInventory.reduce((sum, item) => sum + Number(item.quantity || 0), 0)
+  const productSpecMode = getProductSpecMode(form.product_type, form.category)
   const totalPages = Math.max(1, Math.ceil(totalProducts / productsPerPage))
   const firstVisibleProduct = totalProducts === 0 ? 0 : (inventoryPage - 1) * productsPerPage + 1
   const lastVisibleProduct = Math.min(totalProducts, inventoryPage * productsPerPage)
@@ -542,6 +593,8 @@ function getProductMainImage(product: Product) {
       ram: product.specs?.ram || '',
       camera: product.specs?.camera || '',
       battery: product.specs?.battery || '',
+      gpu: product.specs?.gpu || '',
+      os: product.specs?.os || '',
       web_discount_percent: String(product.specs?.web_discount_percent || ''),
     })
     setModalOpen(true)
@@ -635,16 +688,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
       short_description: form.short_description.trim() || null,
       slug: form.slug.trim() || null,
       full_description: form.full_description.trim() || null,
-      specs: {
-        ...(editingProduct?.specs || {}),
-        cpu: form.cpu,
-        display: form.display,
-        storage: form.storage,
-        ram: form.ram,
-        camera: form.camera,
-        battery: form.battery,
-        web_discount_percent: Math.min(100, Math.max(0, Number(form.web_discount_percent || 0))),
-      },
+      specs: buildProductSpecs(form),
     }
 
     let savedProductId = editingProduct?.id || ''
@@ -1481,12 +1525,25 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
   />
 </div>
 
-<Input label="CPU" value={form.cpu} onChange={(v) => updateForm('cpu', v)} />
-<Input label="Display" value={form.display} onChange={(v) => updateForm('display', v)} />
-<Input label="Storage" value={form.storage} onChange={(v) => updateForm('storage', v)} />
-<Input label="RAM" value={form.ram} onChange={(v) => updateForm('ram', v)} />
-<Input label="Cámara" value={form.camera} onChange={(v) => updateForm('camera', v)} />
-<Input label="Batería" value={form.battery} onChange={(v) => updateForm('battery', v)} />
+{productSpecMode !== 'none' && (
+  <div className="md:col-span-3 grid gap-4 md:grid-cols-3">
+    <Input label="CPU" value={form.cpu} onChange={(v) => updateForm('cpu', v)} />
+    <Input label="Storage" value={form.storage} onChange={(v) => updateForm('storage', v)} />
+    <Input label="RAM" value={form.ram} onChange={(v) => updateForm('ram', v)} />
+    <Input label="Display" value={form.display} onChange={(v) => updateForm('display', v)} />
+    {productSpecMode === 'computer' ? (
+      <>
+        <Input label="GPU" value={form.gpu} onChange={(v) => updateForm('gpu', v)} />
+        <Input label="OS" value={form.os} onChange={(v) => updateForm('os', v)} />
+      </>
+    ) : (
+      <>
+        <Input label="Bater?a" value={form.battery} onChange={(v) => updateForm('battery', v)} />
+        <Input label="C?mara" value={form.camera} onChange={(v) => updateForm('camera', v)} />
+      </>
+    )}
+  </div>
+)}
 
   <textarea
     value={form.short_description}

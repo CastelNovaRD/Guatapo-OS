@@ -70,9 +70,9 @@ export default function InvoiceQuick80({ sale, items, paymentMethod }: Props) {
 
       <div className="mt-8 text-[17px] font-bold leading-tight">
         <p>{receiptDate(sale.created_at)}</p>
-        <div className="relative mt-2 uppercase">
-          <p className="text-center whitespace-nowrap">{sale.invoice_number || `FAC-${sale.id.slice(0, 7)}`}</p>
-          <span className="absolute right-0 top-0 text-right">{paymentMethodLabel(sale, paymentMethod)}</span>
+        <div className="mt-2 flex items-start justify-between gap-2 uppercase">
+          <span className="min-w-0 whitespace-nowrap">{sale.invoice_number || `FAC-${sale.id.slice(0, 7)}`}</span>
+          <span className="max-w-[36mm] text-right text-[15px] leading-tight break-words">{paymentMethodLabel(sale, paymentMethod)}</span>
         </div>
       </div>
 

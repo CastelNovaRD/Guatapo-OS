@@ -14,12 +14,14 @@ import type { WebCategory, WebProduct, WebProductImage } from '@/components/web/
 import { addProductToCart, openProductWhatsApp, productAvailability } from '@/components/web/cart'
 
 const specLabels: Record<string, string> = {
-  cpu: 'Cpu',
-  display: 'Display',
+  cpu: 'CPU',
   storage: 'Storage',
-  ram: 'Ram',
-  camera: 'Camara',
+  ram: 'RAM',
+  display: 'Display',
+  gpu: 'GPU',
+  os: 'OS',
   battery: 'Bateria',
+  camera: 'Camara',
 }
 
 function withCoopPrice(product: WebProduct): WebProduct {

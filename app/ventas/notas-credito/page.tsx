@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import AppShell from '@/components/AppShell'
 import { supabase } from '@/lib/supabase'
 import { formatDate, formatMoney } from '@/lib/format'
@@ -55,8 +55,16 @@ export default function CreditNotesPage() {
   const [saving, setSaving] = useState(false)
   const [createdCreditNoteId, setCreatedCreditNoteId] = useState<string | null>(null)
 
-  async function searchInvoice() {
-    const query = invoiceSearch.trim()
+  useEffect(() => {
+    const invoice = new URLSearchParams(window.location.search).get('invoice')
+    if (!invoice) return
+
+    setInvoiceSearch(invoice)
+    void searchInvoice(invoice)
+  }, [])
+
+  async function searchInvoice(invoiceOverride?: string) {
+    const query = (invoiceOverride || invoiceSearch).trim()
     if (!query) return alert('Escribe el numero de factura')
 
     const storeId = await getCurrentStoreId()
@@ -216,7 +224,7 @@ export default function CreditNotesPage() {
             className="min-w-0 flex-1 rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-emerald-500"
           />
           <button
-            onClick={searchInvoice}
+            onClick={() => void searchInvoice()}
             className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 font-bold text-white hover:bg-emerald-600"
           >
             <Search size={18} />

@@ -20,6 +20,7 @@ export type CashRegisterMovement = {
 }
 
 export type CashRegisterRefund = {
+  sale_id?: string | null
   total: number | null
   refund_method?: string | null
 }
@@ -110,6 +111,7 @@ export function calculateCashRegisterTotals({
   const salesWithDetailedPayments = new Set(
     payments.map((payment) => payment.sale_id).filter(Boolean)
   )
+  const saleKindById = new Map<string, 'cash' | 'card' | 'transfer' | 'credit'>()
 
   for (const payment of payments) {
     const amount = Number(payment.amount || 0)
@@ -121,15 +123,19 @@ export function calculateCashRegisterTotals({
     totals.totalCardFee += cardFee
 
     if (method === 'cash') {
+      if (payment.sale_id && !saleKindById.has(payment.sale_id)) saleKindById.set(payment.sale_id, 'cash')
       totals.cashSales += amount
       totals.businessSales += amount
       totals.expectedCash += amount
     } else if (method === 'card') {
+      if (payment.sale_id && !saleKindById.has(payment.sale_id)) saleKindById.set(payment.sale_id, 'card')
       totals.cardSales += amount
       totals.businessSales += amount
     } else if (method === 'credit_note') {
+      if (payment.sale_id && !saleKindById.has(payment.sale_id)) saleKindById.set(payment.sale_id, 'credit')
       totals.creditSales += amount
     } else {
+      if (payment.sale_id && !saleKindById.has(payment.sale_id)) saleKindById.set(payment.sale_id, 'transfer')
       totals.transferSales += amount
       totals.businessSales += amount
     }
@@ -145,6 +151,8 @@ export function calculateCashRegisterTotals({
 
     totals.businessSales += businessTotal
     totals.totalCardFee += cardFee
+
+    if (sale.id) saleKindById.set(sale.id, kind)
 
     if (kind === 'cash') {
       const cashReceived = Number(sale.cash_received || 0)
@@ -164,6 +172,18 @@ export function calculateCashRegisterTotals({
   for (const refund of refunds) {
     const total = Number(refund.total || 0)
     const kind = getRefundKind(refund.refund_method)
+    const originalSaleKind = refund.sale_id ? saleKindById.get(refund.sale_id) : null
+    const salesKindToReduce = kind === 'credit' && originalSaleKind ? originalSaleKind : kind
+
+    totals.businessSales = Math.max(0, totals.businessSales - total)
+
+    if (salesKindToReduce === 'cash') {
+      totals.cashSales = Math.max(0, totals.cashSales - total)
+    } else if (salesKindToReduce === 'card') {
+      totals.cardSales = Math.max(0, totals.cardSales - total)
+    } else if (salesKindToReduce === 'transfer') {
+      totals.transferSales = Math.max(0, totals.transferSales - total)
+    }
 
     if (kind === 'cash') {
       totals.cashRefunds += total

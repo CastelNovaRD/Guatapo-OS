@@ -16,12 +16,14 @@ import { DEFAULT_WEB_SETTINGS, WebSettings, normalizeWebSettings, readLocalWebSe
 import { buildCategoryUrl } from '@/lib/web-categories'
 
 const specLabels: Record<string, string> = {
-  cpu: 'Cpu',
-  display: 'Display',
+  cpu: 'CPU',
   storage: 'Storage',
-  ram: 'Ram',
-  camera: 'Camara',
+  ram: 'RAM',
+  display: 'Display',
+  gpu: 'GPU',
+  os: 'OS',
   battery: 'Bateria',
+  camera: 'Camara',
 }
 
 export default function WebProductDetailPage() {

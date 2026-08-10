@@ -90,12 +90,12 @@ export default function CashRegisterPrint() {
       detailedPayments = paymentRows || []
     }
 
-    let refunds: { total: number; refund_method: string | null }[] = []
+    let refunds: { sale_id: string | null; total: number; refund_method: string | null }[] = []
 
     if (saleIds.length > 0) {
       const { data: refundRows } = await supabase
         .from('credit_notes')
-        .select('total, refund_method')
+        .select('sale_id, total, refund_method')
         .in('sale_id', saleIds)
 
       refunds = refundRows || []
@@ -200,7 +200,7 @@ export default function CashRegisterPrint() {
           <Row label="Ventas por transferencia" value={formatMoney(paymentBreakdown.transfer)} />
           <Row label="Nota de credito" value={formatMoney(paymentBreakdown.creditNote)} />
           <Row label="Devoluciones en efectivo" value={formatMoney(paymentBreakdown.cashRefunds)} />
-          <Row label="Retiros de efectivo" value={formatMoney(paymentBreakdown.withdrawals)} />
+          <Row label="Retiros de caja" value={formatMoney(paymentBreakdown.withdrawals)} />
           <Row label="Comision tarjeta" value={formatMoney(cash.total_card_fee)} />
           <Row label="Ganancia estimada" value={formatMoney(cash.total_profit)} />
           <Row label="Efectivo contado" value={formatMoney(cash.closing_amount || 0)} />
