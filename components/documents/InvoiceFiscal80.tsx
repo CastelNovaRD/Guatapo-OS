@@ -118,7 +118,7 @@ export default function InvoiceFiscal80({ sale, items, customer, fallbackCustome
           const itemTax = taxTotal * ratio
           return (
             <div key={`${item.product_name}-${index}`} className="grid break-inside-avoid grid-cols-[94px_24px_68px_74px] items-start gap-x-1">
-              <span className="break-words uppercase leading-tight">{item.product_name}</span>
+              <span className="break-words uppercase leading-tight">{item.product_name}{item.imei && <span className="mt-1 block text-[10px] normal-case">IMEI: {item.imei}</span>}</span>
               <span className="text-center">{item.quantity}</span>
               <span className="text-right">{receiptMoney(itemTax)}</span>
               <span className="text-right">{receiptMoney(item.total)}</span>
@@ -129,6 +129,7 @@ export default function InvoiceFiscal80({ sale, items, customer, fallbackCustome
 
       <PaymentBlock sale={sale} paymentMethod={paymentMethod} />
       <FiscalTotals sale={sale} />
+      {sale.fiscal_notes && <p className="mt-5 break-words text-[12px]"><strong>Notas:</strong> {sale.fiscal_notes}</p>}
 
       <div className="mt-6 flex break-inside-avoid justify-center">
         <QRCodeSVG value={qrValue} size={145} level="M" />

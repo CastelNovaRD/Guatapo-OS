@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase'
 import { formatDateTime, formatMoney } from '@/lib/format'
 import ProductGallery from '@/components/inventory/ProductGallery'
 import { getCurrentStoreId } from '@/lib/store-context'
+import { productMatchesSearch } from '@/lib/product-search'
 import { uploadProductImageOrFallback } from '@/lib/image-upload'
 import { logAudit } from '@/lib/audit'
 import ExportModal from '@/components/export/ExportModal'
@@ -499,7 +500,7 @@ function getProductMainImage(product: Product) {
     if (currentStoreId) await loadProductsPage(currentStoreId, options)
   }
 
-  const filteredProducts = products
+  const filteredProducts = products.filter((product) => productMatchesSearch(product, search))
 
   const allCategoryNames = useMemo(() => {
     const names = new Set<string>()

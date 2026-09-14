@@ -1,14 +1,16 @@
 ﻿'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'next/navigation'
+import { useParams, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import InvoiceFiscal80 from './InvoiceFiscal80'
 import InvoiceQuick80 from './InvoiceQuick80'
+import InvoiceA4 from './InvoiceA4'
 import type { Invoice80Customer, Invoice80FiscalCustomer, Invoice80Item, Invoice80PaymentMethod, Invoice80Sale } from './invoice80-helpers'
 
 export default function InvoiceSimple80() {
   const params = useParams()
+  const searchParams = useSearchParams()
   const saleId = params.id as string
 
   const [sale, setSale] = useState<Invoice80Sale | null>(null)
@@ -24,7 +26,7 @@ export default function InvoiceSimple80() {
 
     const { data: saleData, error: saleError } = await supabase
       .from('sales')
-      .select('id, invoice_number, ncf, subtotal, itbis, total, discount, card_fee, shipping_cost, net_received, created_at, customer_id, payment_method_id, cash_received, cash_change, sale_channel, fiscal_receipt_type, fiscal_status, fiscal_customer_name, fiscal_customer_rnc, fiscal_customer_phone, fiscal_customer_address, ecf_security_code, ecf_qr_url')
+      .select('id, invoice_number, ncf, subtotal, itbis, total, discount, card_fee, shipping_cost, net_received, created_at, customer_id, payment_method_id, cash_received, cash_change, sale_channel, fiscal_receipt_type, fiscal_status, fiscal_customer_name, fiscal_customer_rnc, fiscal_customer_phone, fiscal_customer_address, fiscal_notes, ecf_security_code, ecf_qr_url')
       .eq('id', saleId)
       .single()
 
@@ -117,16 +119,21 @@ export default function InvoiceSimple80() {
 
   if (loading) return <main className="p-6">Cargando factura...</main>
   if (!sale) return <main className="p-6">No se encontro la factura.</main>
+  const format = searchParams.get('format') === 'a4' ? 'a4' : 'thermal'
 
   return (
     <main className="min-h-screen bg-zinc-100 p-6 print:bg-white print:p-0">
-      <div className="mx-auto mb-4 flex max-w-[80mm] justify-end print:hidden">
+      <div className="mx-auto mb-4 flex max-w-[210mm] justify-end gap-2 print:hidden">
+        <a href={`/ventas/${saleId}/imprimir`} className={`rounded-xl px-4 py-3 font-bold ${format === 'thermal' ? 'bg-zinc-900 text-white' : 'border border-zinc-300 bg-white'}`}>Ticket térmico</a>
+        <a href={`/ventas/${saleId}/imprimir?format=a4`} className={`rounded-xl px-4 py-3 font-bold ${format === 'a4' ? 'bg-zinc-900 text-white' : 'border border-zinc-300 bg-white'}`}>Factura A4</a>
         <button onClick={() => window.print()} className="rounded-xl bg-emerald-700 px-5 py-3 font-bold text-white">
           Imprimir factura
         </button>
       </div>
 
-      {sale.ncf ? (
+      {format === 'a4' ? (
+        <InvoiceA4 sale={sale} items={items} customer={customer} paymentMethod={paymentMethod} />
+      ) : sale.ncf ? (
         <InvoiceFiscal80
           sale={sale}
           items={items}
@@ -157,13 +164,13 @@ export default function InvoiceSimple80() {
 
         @media print {
           @page {
-            size: 80mm auto;
+            size: ${format === 'a4' ? 'A4' : '80mm auto'};
             margin: 0;
           }
 
           html,
           body {
-            width: 80mm;
+            width: ${format === 'a4' ? '210mm' : '80mm'};
             margin: 0 !important;
             padding: 0 !important;
             background: white !important;
@@ -180,6 +187,8 @@ export default function InvoiceSimple80() {
             break-inside: auto;
             page-break-inside: auto;
           }
+
+          .invoice-a4 { width: 210mm !important; min-height: 297mm !important; box-shadow: none !important; }
         }
       `}</style>
     </main>

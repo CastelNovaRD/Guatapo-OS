@@ -6,6 +6,8 @@ import { supabase } from '@/lib/supabase'
 import AppShell from '@/components/AppShell'
 import { formatMoney } from '@/lib/format'
 import { getCurrentStoreId } from '@/lib/store-context'
+import { lookupDgiiContributor } from '@/lib/dgii-contributors'
+import { productMatchesSearch } from '@/lib/product-search'
 import { logAudit } from '@/lib/audit'
 import { calculateCashRegisterTotals } from '@/lib/cash-register'
 import {
@@ -47,6 +49,14 @@ type ProductImage = {
   image_url: string
   is_primary: boolean
   sort_order: number
+}
+
+type PosProductsFetchParams = {
+  storeId: string
+  limit: number
+  searchTerm: string
+  category: string
+  options: { showLoading?: boolean }
 }
 
 type PaymentMethod = {
@@ -223,7 +233,6 @@ export default function POSPage() {
   const [customerSearch, setCustomerSearch] = useState('')
   const [fiscalCustomerMode, setFiscalCustomerMode] = useState<'search' | 'new'>('search')
   const [fiscalLookupValue, setFiscalLookupValue] = useState('')
-  const [fiscalQuoteCustomerId, setFiscalQuoteCustomerId] = useState<string | null>(null)
   const [shippingCost, setShippingCost] = useState('')
   const [fiscalSale, setFiscalSale] = useState(false)
   const [fiscalPaymentPending, setFiscalPaymentPending] = useState(false)
@@ -235,6 +244,9 @@ export default function POSPage() {
   const [fiscalCustomerRnc, setFiscalCustomerRnc] = useState('')
   const [fiscalCustomerPhone, setFiscalCustomerPhone] = useState('')
   const [fiscalCustomerAddress, setFiscalCustomerAddress] = useState('')
+  const [fiscalNotes, setFiscalNotes] = useState('')
+  const [fiscalCustomerSource, setFiscalCustomerSource] = useState<string | null>(null)
+  const [fiscalContributorConfirmed, setFiscalContributorConfirmed] = useState(false)
   const [saving, setSaving] = useState(false)
   const [cashModal, setCashModal] = useState(false)
   const [cashReceived, setCashReceived] = useState('')
@@ -268,7 +280,7 @@ export default function POSPage() {
 
   const searchRef = useRef<HTMLInputElement>(null)
   const productsFetchInFlightRef = useRef(false)
-  const pendingProductsFetchRef = useRef<null | { storeId: string; limit: number; options: { showLoading?: boolean } }>(null)
+  const pendingProductsFetchRef = useRef<PosProductsFetchParams | null>(null)
 
   useEffect(() => {
     loadAll()
@@ -364,21 +376,34 @@ export default function POSPage() {
     await loadPosProducts(currentStoreId, safeLimit, { showLoading: products.length === 0 })
   }
 
-  async function loadPosProducts(currentStoreId = storeId, limit = posFeaturedProductsLimit, options: { showLoading?: boolean } = {}) {
+  async function loadPosProducts(
+    currentStoreId = storeId,
+    limit = posFeaturedProductsLimit,
+    options: { showLoading?: boolean } = {},
+    filters: { searchTerm?: string; category?: string } = {}
+  ) {
     if (!currentStoreId) return
 
+    const fetchParams: PosProductsFetchParams = {
+      storeId: currentStoreId,
+      limit,
+      searchTerm: filters.searchTerm ?? debouncedSearch,
+      category: filters.category ?? categoryFilter,
+      options,
+    }
+
     if (productsFetchInFlightRef.current) {
-      pendingProductsFetchRef.current = { storeId: currentStoreId, limit, options }
+      pendingProductsFetchRef.current = fetchParams
       return
     }
 
     productsFetchInFlightRef.current = true
     const showLoading = options.showLoading ?? products.length === 0
-    const activeCategoryFilter = categoryFilter
+    const activeCategoryFilter = fetchParams.category.trim()
     if (showLoading) setProductsLoading(true)
 
     try {
-      const cleanSearch = debouncedSearch.replace(/[%,_]/g, '').trim()
+      const cleanSearch = fetchParams.searchTerm.replace(/[%,_]/g, '').trim()
       let productsData: Product[] = []
 
       if (!cleanSearch && !activeCategoryFilter) {
@@ -390,15 +415,17 @@ export default function POSPage() {
         if (!error && data) productsData = data as Product[]
 
         if (error) {
-          const { data: fallbackData } = await supabase
+          console.warn('[POS] Error cargando productos destacados, usando consulta directa:', error.message)
+          const { data: fallbackData, error: fallbackError } = await supabase
             .from('products')
             .select('id, name, sku, barcode, image_url, sale_price, cost, stock, product_type, category, specs')
             .eq('store_id', currentStoreId)
-            .eq('active', true)
+            .neq('active', false)
             .gt('stock', 0)
             .order('name')
-            .limit(limit)
+            .range(0, Math.max(0, limit - 1))
 
+          if (fallbackError) console.warn('[POS] Error cargando productos:', fallbackError.message)
           productsData = fallbackData || []
         }
       } else {
@@ -406,16 +433,18 @@ export default function POSPage() {
           .from('products')
           .select('id, name, sku, barcode, image_url, sale_price, cost, stock, product_type, category, specs')
           .eq('store_id', currentStoreId)
-          .eq('active', true)
+          .neq('active', false)
           .gt('stock', 0)
 
         if (cleanSearch) {
-          query = query.or(`name.ilike.%${cleanSearch}%,sku.ilike.%${cleanSearch}%,barcode.ilike.%${cleanSearch}%,category.ilike.%${cleanSearch}%`)
+          query = query.or(`name.ilike.%${cleanSearch}%,sku.ilike.%${cleanSearch}%,barcode.ilike.%${cleanSearch}%,category.ilike.%${cleanSearch}%,product_type.ilike.%${cleanSearch}%`)
         }
 
         if (activeCategoryFilter) query = query.eq('category', activeCategoryFilter)
 
-        const { data } = await query.order('name').limit(50)
+        const resultLimit = cleanSearch ? 100 : Math.max(50, limit)
+        const { data, error } = await query.order('name').range(0, resultLimit - 1)
+        if (error) console.warn('[POS] Error buscando productos:', error.message)
         productsData = data || []
       }
 
@@ -424,13 +453,14 @@ export default function POSPage() {
 
       const productIds = productsData.map((product) => product.id)
       if (shouldApplyResult && productIds.length > 0) {
-        const { data: imagesData } = await supabase
+        const { data: imagesData, error: imagesError } = await supabase
           .from('product_images')
           .select('id, product_id, image_url, is_primary, sort_order')
           .eq('store_id', currentStoreId)
           .in('product_id', productIds)
           .order('sort_order')
 
+        if (imagesError) console.warn('[POS] Error cargando imagenes de productos:', imagesError.message)
         setProductImages(imagesData || [])
       } else if (shouldApplyResult && showLoading) {
         setProductImages([])
@@ -442,7 +472,12 @@ export default function POSPage() {
       const pendingFetch = pendingProductsFetchRef.current
       if (pendingFetch) {
         pendingProductsFetchRef.current = null
-        void loadPosProducts(pendingFetch.storeId, pendingFetch.limit, pendingFetch.options)
+        void loadPosProducts(
+          pendingFetch.storeId,
+          pendingFetch.limit,
+          pendingFetch.options,
+          { searchTerm: pendingFetch.searchTerm, category: pendingFetch.category }
+        )
       }
     }
   }
@@ -900,13 +935,13 @@ function getProductMainImage(product: Product) {
   }, [search])
 
   useEffect(() => {
-    if (storeId) void loadPosProducts(storeId, posFeaturedProductsLimit, { showLoading: products.length === 0 })
+    if (storeId) void loadPosProducts(storeId, posFeaturedProductsLimit, { showLoading: products.length === 0 }, { searchTerm: debouncedSearch, category: categoryFilter })
   }, [storeId, debouncedSearch, categoryFilter, posFeaturedProductsLimit])
 
   useEffect(() => {
     function refreshPosInBackground() {
       if (document.visibilityState === 'visible' && storeId) {
-        void loadPosProducts(storeId, posFeaturedProductsLimit, { showLoading: false })
+        void loadPosProducts(storeId, posFeaturedProductsLimit, { showLoading: false }, { searchTerm: debouncedSearch, category: categoryFilter })
         void loadCash(storeId, { showLoading: false })
       }
     }
@@ -917,7 +952,7 @@ function getProductMainImage(product: Product) {
       window.removeEventListener('focus', refreshPosInBackground)
       document.removeEventListener('visibilitychange', refreshPosInBackground)
     }
-  }, [storeId, posFeaturedProductsLimit])
+  }, [storeId, posFeaturedProductsLimit, debouncedSearch, categoryFilter])
 
   const categoryOptions = useMemo(() => {
     const names = new Set<string>()
@@ -930,25 +965,7 @@ function getProductMainImage(product: Product) {
     return Array.from(names).sort((a, b) => a.localeCompare(b))
   }, [productCategories, products])
 
-  const filteredProducts = useMemo(() => {
-    const query = search.trim().toLowerCase()
-    if (!query) return products
-
-    const queryDigits = query.replace(/\D/g, '')
-
-    return products.filter((product) => {
-      const searchableText = [product.name, product.sku, product.barcode, product.category]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase()
-      const searchableDigits = [product.sku, product.barcode]
-        .filter(Boolean)
-        .join(' ')
-        .replace(/\D/g, '')
-
-      return searchableText.includes(query) || (queryDigits.length > 0 && searchableDigits.includes(queryDigits))
-    })
-  }, [products, search])
+  const filteredProducts = useMemo(() => products.filter((product) => productMatchesSearch(product, search)), [products, search])
 
   const requiresCustomer = cart.some((item) =>
     ['phone', 'tablet', 'laptop'].includes(item.product_type)
@@ -1223,7 +1240,9 @@ function getProductMainImage(product: Product) {
     if (match) {
       selectCustomer(match)
       setFiscalCustomerMode('search')
-      setCustomerLookupMessage('Cliente registrado encontrado. Se usara para esta factura.')
+      setFiscalCustomerSource('cliente local')
+      setFiscalContributorConfirmed(false)
+      setCustomerLookupMessage('Cliente registrado encontrado. Confirma que es el contribuyente correcto.')
       return
     }
 
@@ -1245,7 +1264,6 @@ function getProductMainImage(product: Product) {
       const fiscalDocument = formatFiscalDocument(fiscalMatch.rnc || documentValue)
       const fiscalPhone = fiscalMatch.phone ? formatPhone(fiscalMatch.phone) : ''
 
-      setFiscalQuoteCustomerId(fiscalMatch.id)
       setExistingCustomerId(null)
       setCustomerSearch(fiscalMatch.company_name || '')
       setCustomerName(fiscalMatch.company_name || '')
@@ -1256,12 +1274,31 @@ function getProductMainImage(product: Product) {
       setFiscalCustomerPhone(fiscalPhone)
       setFiscalCustomerAddress(fiscalMatch.address || '')
       setFiscalCustomerMode('search')
-      setCustomerLookupMessage('Cliente fiscal registrado encontrado. Se usara para esta factura.')
+      setFiscalCustomerSource('cliente fiscal local')
+      setFiscalContributorConfirmed(false)
+      setCustomerLookupMessage('Cliente fiscal registrado encontrado. Confirma que es el contribuyente correcto.')
+      return
+    }
+
+    const dgiiResult = await lookupDgiiContributor(documentValue)
+    if (dgiiResult.status === 'found') {
+      const fiscalDocument = formatFiscalDocument(dgiiResult.contributor.document)
+      setExistingCustomerId(null)
+      setCustomerSearch(dgiiResult.contributor.registeredName)
+      setCustomerName(dgiiResult.contributor.registeredName)
+      setCustomerCedula(fiscalDocument)
+      setFiscalCustomerName(dgiiResult.contributor.registeredName)
+      setFiscalCustomerRnc(fiscalDocument)
+      setFiscalCustomerPhone('')
+      setFiscalCustomerAddress('')
+      setFiscalCustomerSource('dataset oficial DGII')
+      setFiscalContributorConfirmed(false)
+      setFiscalCustomerMode('search')
+      setCustomerLookupMessage('Registro encontrado en el dataset DGII. Confirma que es el contribuyente correcto.')
       return
     }
 
     setExistingCustomerId(null)
-    setFiscalQuoteCustomerId(null)
     setCustomerSearch('')
     setCustomerName('')
     setCustomerPhone('')
@@ -1271,7 +1308,21 @@ function getProductMainImage(product: Product) {
     setFiscalCustomerPhone('')
     setFiscalCustomerAddress('')
     setFiscalCustomerMode('new')
-    setCustomerLookupMessage('No encontramos ese cliente. Completa los datos para agregarlo.')
+    setFiscalCustomerSource(dgiiResult.status === 'unavailable' ? 'captura manual (dataset DGII pendiente)' : 'captura manual')
+    setFiscalContributorConfirmed(false)
+    setCustomerLookupMessage(dgiiResult.status === 'unavailable'
+      ? 'El dataset oficial DGII aún no está conectado. Completa y confirma los datos manualmente.'
+      : 'No encontramos ese contribuyente. Completa y confirma los datos para agregarlo.')
+  }
+
+  function confirmFiscalContributor() {
+    if (!fiscalCustomerName.trim() || !fiscalCustomerRnc.trim()) {
+      return alert('Completa razón social y RNC o cédula antes de confirmar.')
+    }
+    setCustomerName(fiscalCustomerName.trim())
+    setCustomerCedula(formatFiscalDocument(fiscalCustomerRnc))
+    setFiscalContributorConfirmed(true)
+    setCustomerLookupMessage('Contribuyente confirmado para esta factura.')
   }
 
   function getPaymentMethodKind(methodId: string): 'cash' | 'transfer' | 'card' {
@@ -1382,6 +1433,9 @@ function getProductMainImage(product: Product) {
     setFiscalCustomerRnc('')
     setFiscalCustomerPhone('')
     setFiscalCustomerAddress('')
+    setFiscalNotes('')
+    setFiscalCustomerSource(null)
+    setFiscalContributorConfirmed(false)
     searchRef.current?.focus()
   }
 
@@ -1421,7 +1475,7 @@ function getProductMainImage(product: Product) {
       const [productId, item] = insufficient
       const available = Number(stockMap.get(productId) || 0)
       alert(`Stock insuficiente para ${item.name}. Disponible: ${available}. Solicitado: ${item.quantity}.`)
-      await loadPosProducts(storeId, posFeaturedProductsLimit, { showLoading: false })
+      await loadPosProducts(storeId, posFeaturedProductsLimit, { showLoading: false }, { searchTerm: debouncedSearch, category: categoryFilter })
       return null
     }
 
@@ -1475,6 +1529,9 @@ function getProductMainImage(product: Product) {
     if (fiscalSale && !customerName.trim()) {
       return alert('Selecciona un cliente para emitir una venta con comprobante.')
     }
+    if (fiscalSale && !fiscalContributorConfirmed) {
+      return alert('Confirma explícitamente el contribuyente antes de emitir el comprobante.')
+    }
 
     if (fiscalSale && !customerCedula.trim() && !fiscalCustomerRnc.trim()) {
       return alert('Para venta con comprobante debes completar RNC o cédula del cliente.')
@@ -1507,13 +1564,8 @@ function getProductMainImage(product: Product) {
     let customerId: string | null = null
 
     if (requiresCustomer || fiscalSale) {
-      if (fiscalQuoteCustomerId) {
-        customerId = null
-      } else {
-        const existingCustomer =
-          existingCustomerId
-            ? { id: existingCustomerId }
-            : await findExistingCustomer(customerPhone, customerCedula)
+      {
+        const existingCustomer = existingCustomerId ? { id: existingCustomerId } : await findExistingCustomer(customerPhone, customerCedula)
 
         if (existingCustomer) {
           customerId = existingCustomer.id
@@ -1584,6 +1636,8 @@ function getProductMainImage(product: Product) {
         fiscal_customer_rnc: fiscalSale ? fiscalCustomerRnc.trim() : null,
         fiscal_customer_phone: fiscalSale ? fiscalCustomerPhone.trim() || null : null,
         fiscal_customer_address: fiscalSale ? fiscalCustomerAddress.trim() || null : null,
+        fiscal_customer_source: fiscalSale ? fiscalCustomerSource : null,
+        fiscal_notes: fiscalSale ? fiscalNotes.trim() || null : null,
         notes: saleNotes,
       })
       .select('id, invoice_number, created_at')
@@ -1711,7 +1765,7 @@ function getProductMainImage(product: Product) {
 
       if (stockUpdateError || !updatedProduct) {
         setSaving(false)
-        await loadPosProducts(storeId, posFeaturedProductsLimit, { showLoading: false })
+        await loadPosProducts(storeId, posFeaturedProductsLimit, { showLoading: false }, { searchTerm: debouncedSearch, category: categoryFilter })
         return alert(`No pude descontar el stock de ${item.name}. Otra caja pudo haber vendido este producto. Revisa la factura y el inventario antes de continuar.`)
       }
     }
@@ -1754,7 +1808,7 @@ function getProductMainImage(product: Product) {
 
     setSaving(false)
     notifyInventoryUpdated()
-    void loadPosProducts(storeId, posFeaturedProductsLimit, { showLoading: false })
+    void loadPosProducts(storeId, posFeaturedProductsLimit, { showLoading: false }, { searchTerm: debouncedSearch, category: categoryFilter })
     void loadCash(storeId, { showLoading: false })
   }
 
@@ -2183,6 +2237,7 @@ function getProductMainImage(product: Product) {
                 onChange={(event) => {
                   const checked = event.target.checked
                   setFiscalSale(checked)
+                  setFiscalContributorConfirmed(false)
                   if (checked) {
                     setTaxPercent('18')
                     loadNextAvailableNcf(fiscalReceiptType)
@@ -2228,6 +2283,7 @@ function getProductMainImage(product: Product) {
                       type="button"
                       onClick={() => {
                         setFiscalCustomerMode('search')
+                        setFiscalContributorConfirmed(false)
                         setCustomerLookupMessage('')
                       }}
                       className={`rounded-xl px-3 py-2 text-sm font-bold transition ${fiscalCustomerMode === 'search' ? 'bg-emerald-600 text-white' : 'border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50'}`}
@@ -2239,6 +2295,7 @@ function getProductMainImage(product: Product) {
                       onClick={() => {
                         setFiscalCustomerMode('new')
                         setExistingCustomerId(null)
+                        setFiscalContributorConfirmed(false)
                         setCustomerLookupMessage('')
                       }}
                       className={`rounded-xl px-3 py-2 text-sm font-bold transition ${fiscalCustomerMode === 'new' ? 'bg-emerald-600 text-white' : 'border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50'}`}
@@ -2306,6 +2363,7 @@ function getProductMainImage(product: Product) {
                         onChange={(event) => {
                           setFiscalCustomerName(event.target.value)
                           setCustomerName(event.target.value)
+                          setFiscalContributorConfirmed(false)
                         }}
                         placeholder="Nombre o razon social *"
                         className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
@@ -2316,6 +2374,7 @@ function getProductMainImage(product: Product) {
                           const nextPhone = formatPhone(event.target.value)
                           setFiscalCustomerPhone(nextPhone)
                           setCustomerPhone(nextPhone)
+                          setFiscalContributorConfirmed(false)
                         }}
                         onBlur={() => void autocompleteCustomer(customerPhone, customerCedula)}
                         placeholder="Telefono *"
@@ -2327,6 +2386,7 @@ function getProductMainImage(product: Product) {
                           const nextDocument = formatFiscalDocument(event.target.value)
                           setFiscalCustomerRnc(nextDocument)
                           setCustomerCedula(nextDocument)
+                          setFiscalContributorConfirmed(false)
                         }}
                         onBlur={() => void autocompleteCustomer(customerPhone, customerCedula)}
                         placeholder="RNC o cedula *"
@@ -2334,12 +2394,28 @@ function getProductMainImage(product: Product) {
                       />
                       <input
                         value={fiscalCustomerAddress}
-                        onChange={(event) => setFiscalCustomerAddress(event.target.value)}
+                        onChange={(event) => { setFiscalCustomerAddress(event.target.value); setFiscalContributorConfirmed(false) }}
                         placeholder="Direccion"
                         className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
                       />
                     </div>
                   )}
+
+                  {fiscalCustomerName && fiscalCustomerRnc && (
+                    <div className={`rounded-xl border p-3 text-sm ${fiscalContributorConfirmed ? 'border-emerald-300 bg-emerald-50' : 'border-amber-300 bg-amber-50'}`}>
+                      <p className="font-black text-zinc-900">{fiscalCustomerName}</p>
+                      <p className="text-zinc-700">RNC/Cédula: {fiscalCustomerRnc}</p>
+                      {fiscalCustomerSource && <p className="mt-1 text-xs text-zinc-600">Origen: {fiscalCustomerSource}</p>}
+                      <button type="button" onClick={confirmFiscalContributor} className={`mt-2 rounded-lg px-3 py-2 text-xs font-bold ${fiscalContributorConfirmed ? 'border border-emerald-300 bg-white text-emerald-800' : 'bg-emerald-700 text-white hover:bg-emerald-800'}`}>
+                        {fiscalContributorConfirmed ? 'Contribuyente confirmado' : 'Confirmar contribuyente'}
+                      </button>
+                    </div>
+                  )}
+
+                  <label className="block">
+                    <span className="mb-2 block text-sm text-zinc-500">Notas para la factura (opcional)</span>
+                    <textarea value={fiscalNotes} onChange={(event) => setFiscalNotes(event.target.value)} placeholder="Observaciones que aparecerán impresas" className="min-h-20 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500" />
+                  </label>
 
                   {customerLookupMessage && (
                     <p className="text-sm font-semibold text-emerald-700">{customerLookupMessage}</p>

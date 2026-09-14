@@ -61,7 +61,7 @@ function TotalsBlock({ sale }: { sale: Invoice80Sale }) {
   )
 }
 
-export default function InvoiceQuick80({ sale, items, paymentMethod }: Props) {
+export default function InvoiceQuick80({ sale, items, customer, paymentMethod }: Props) {
   const qrValue = receiptQrValue(sale, items)
 
   return (
@@ -70,6 +70,7 @@ export default function InvoiceQuick80({ sale, items, paymentMethod }: Props) {
 
       <div className="mt-8 text-[17px] font-bold leading-tight">
         <p>{receiptDate(sale.created_at)}</p>
+        {customer?.full_name && <p className="mt-1 text-[14px]">CLIENTE: {customer.full_name}</p>}
         <div className="mt-2 flex items-start justify-between gap-2 uppercase">
           <span className="min-w-0 whitespace-nowrap">{sale.invoice_number || `FAC-${sale.id.slice(0, 7)}`}</span>
           <span className="max-w-[36mm] text-right text-[15px] leading-tight break-words">{paymentMethodLabel(sale, paymentMethod)}</span>
@@ -87,7 +88,7 @@ export default function InvoiceQuick80({ sale, items, paymentMethod }: Props) {
       <div className="space-y-7 py-5 text-[13px] font-bold">
         {items.map((item, index) => (
           <div key={`${item.product_name}-${index}`} className="grid break-inside-avoid grid-cols-[1fr_38px_104px] items-start gap-2">
-            <span className="uppercase leading-tight">{item.product_name}</span>
+            <span className="uppercase leading-tight">{item.product_name}{item.imei && <span className="mt-1 block text-[11px] normal-case">IMEI: {item.imei}</span>}</span>
             <span className="text-center">{item.quantity}</span>
             <span className="text-right">{receiptMoney(item.total)}</span>
           </div>
@@ -96,6 +97,7 @@ export default function InvoiceQuick80({ sale, items, paymentMethod }: Props) {
 
       <PaymentBlock sale={sale} paymentMethod={paymentMethod} />
       <TotalsBlock sale={sale} />
+      {sale.fiscal_notes && <p className="mt-5 break-words text-[13px]"><strong>Notas:</strong> {sale.fiscal_notes}</p>}
 
       <div className="mt-6 flex break-inside-avoid justify-center">
         <QRCodeSVG value={qrValue} size={145} level="M" />

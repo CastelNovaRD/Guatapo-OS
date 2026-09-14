@@ -23,6 +23,7 @@ export type Invoice80Sale = {
   fiscal_customer_rnc: string | null
   fiscal_customer_phone: string | null
   fiscal_customer_address: string | null
+  fiscal_notes?: string | null
   ecf_security_code: string | null
   ecf_qr_url: string | null
 }
