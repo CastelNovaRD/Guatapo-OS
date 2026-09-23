@@ -66,7 +66,7 @@ export async function exportExcelDocument(document: ExportDocument) {
 
   const mainColumns = document.columns || document.tables?.[0]?.columns || []
   const columnCount = Math.max(mainColumns.length, 2)
-  const title = sheet.addRow(['GUATAPO'])
+  const title = sheet.addRow(['SHOPDESK OS'])
   title.height = 24
   title.getCell(1).font = { bold: true, size: 16, color: { argb: 'FFFFFF' } }
   title.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: GREEN_FILL } }

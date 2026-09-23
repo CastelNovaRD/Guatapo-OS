@@ -3,7 +3,6 @@
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import AppShell from '@/components/AppShell'
-import { supabase } from '@/lib/supabase'
 import { formatDate, formatMoney } from '@/lib/format'
 import { getCurrentStoreId } from '@/lib/store-context'
 import { ArrowLeft, FileBadge2, Minus, Plus, Printer, Search } from 'lucide-react'
@@ -63,64 +62,53 @@ export default function CreditNotesPage() {
     void searchInvoice(invoice)
   }, [])
 
-  async function searchInvoice(invoiceOverride?: string) {
-    const query = (invoiceOverride || invoiceSearch).trim()
-    if (!query) return alert('Escribe el numero de factura')
+ async function searchInvoice(invoiceOverride?: string) {
+  const query = (invoiceOverride || invoiceSearch).trim()
+  if (!query) return alert('Escribe el numero de factura')
 
-    const storeId = await getCurrentStoreId()
-    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
+  const storeId = await getCurrentStoreId()
+  if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
 
-    setLoading(true)
-    setSale(null)
-    setItems([])
-    setRestockQuantities({})
-    setDamagedQuantities({})
-    setCreatedCreditNoteId(null)
+  setLoading(true)
+  setSale(null)
+  setItems([])
+  setRestockQuantities({})
+  setDamagedQuantities({})
+  setCreatedCreditNoteId(null)
 
-    const byInvoice = await supabase
-      .from('sales')
-      .select('id, invoice_number, subtotal, itbis, total, ncf, created_at, customer_id, fiscal_customer_name, fiscal_customer_rnc')
-      .eq('store_id', storeId)
-      .eq('invoice_number', query)
-      .maybeSingle()
+  try {
+    const response = await fetch(
+      `/api/credit-notes?search=${encodeURIComponent(query)}`,
+      {
+        method: 'GET',
+        cache: 'no-store',
+      }
+    )
 
-    let saleData = byInvoice.data as Sale | null
-    let saleError = byInvoice.error
+    const result = await response.json().catch(() => null)
 
-    if (!saleData && isUuid(query)) {
-      const byId = await supabase
-        .from('sales')
-        .select('id, invoice_number, subtotal, itbis, total, ncf, created_at, customer_id, fiscal_customer_name, fiscal_customer_rnc')
-        .eq('store_id', storeId)
-        .eq('id', query)
-        .maybeSingle()
+    if (!response.ok) {
+      if (response.status === 404) {
+        return alert('No encontre esa factura')
+      }
 
-      saleData = byId.data as Sale | null
-      saleError = byId.error
+      return alert(
+        'Error buscando factura: ' +
+          (result?.error || `HTTP ${response.status}`)
+      )
     }
 
-    if (saleError) {
-      setLoading(false)
-      return alert('Error buscando factura: ' + saleError.message)
-    }
-
-    if (!saleData) {
-      setLoading(false)
-      return alert('No encontre esa factura')
-    }
-
-    const { data, error } = await supabase
-      .from('sale_items')
-      .select('id, product_id, product_name, quantity, unit_price, discount, total')
-      .eq('store_id', storeId)
-      .eq('sale_id', saleData.id)
-
+    setSale(result.sale as Sale)
+    setItems((result.items || []) as SaleItem[])
+  } catch (error) {
+    alert(
+      'Error buscando factura: ' +
+        (error instanceof Error ? error.message : String(error))
+    )
+  } finally {
     setLoading(false)
-    if (error) return alert('Error cargando productos: ' + error.message)
-
-    setSale(saleData)
-    setItems(data || [])
   }
+}
 
   function changeQuantity(item: SaleItem, target: 'restock' | 'damaged', amount: number) {
     const currentRestock = restockQuantities[item.id] || 0
@@ -145,50 +133,77 @@ export default function CreditNotesPage() {
   const taxAmount = creditSubtotal * (taxPercent / 100)
   const creditTotal = creditSubtotal + taxAmount
 
-  async function createCreditNote() {
-    if (!sale) return
-    if (selectedItems.length === 0) return alert('Selecciona los productos a devolver')
-    if (!reason) return alert('Selecciona el motivo de la devolución')
-    if (reason === 'Otro' && !reasonOther.trim()) return alert('Explica el motivo de la devolución')
-
-    const storeId = await getCurrentStoreId()
-    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
-
-    const payloadItems = selectedItems.map((item) => {
-      const quantity = selectedQuantity(item)
-      const lineSubtotal = itemUnitNet(item) * quantity
-      const lineTax = lineSubtotal * (taxPercent / 100)
-
-      return {
-        sale_item_id: item.id,
-        quantity,
-        restock_quantity: restockQuantities[item.id] || 0,
-        damaged_quantity: damagedQuantities[item.id] || 0,
-        unit_price: itemUnitNet(item),
-        tax_amount: lineTax,
-        total: lineSubtotal + lineTax,
-      }
-    })
-
-    setSaving(true)
-
-    const { data, error } = await supabase.rpc('process_credit_note', {
-      p_store_id: storeId,
-      p_sale_id: sale.id,
-      p_refund_method: refundMethod,
-      p_reason: reason,
-      p_reason_other: reasonOther || null,
-      p_notes: notes || null,
-      p_items: payloadItems,
-    })
-
-    setSaving(false)
-
-    if (error) return alert('No pude crear la nota de crédito: ' + error.message)
-
-    setCreatedCreditNoteId(data as string)
-    alert('Nota de crédito creada correctamente')
+ async function createCreditNote() {
+  if (!sale) return
+  if (selectedItems.length === 0) {
+    return alert('Selecciona los productos a devolver')
   }
+  if (!reason) {
+    return alert('Selecciona el motivo de la devolucion')
+  }
+  if (reason === 'Otro' && !reasonOther.trim()) {
+    return alert('Explica el motivo de la devolucion')
+  }
+
+  const storeId = await getCurrentStoreId()
+  if (!storeId) {
+    return alert('Este usuario no tiene una tienda asignada.')
+  }
+
+  const payloadItems = selectedItems.map((item) => {
+    const quantity = selectedQuantity(item)
+    const lineSubtotal = itemUnitNet(item) * quantity
+    const lineTax = lineSubtotal * (taxPercent / 100)
+
+    return {
+      saleItemId: item.id,
+      quantity,
+      restockQuantity: restockQuantities[item.id] || 0,
+      damagedQuantity: damagedQuantities[item.id] || 0,
+      unitPrice: itemUnitNet(item),
+      taxAmount: lineTax,
+      total: lineSubtotal + lineTax,
+    }
+  })
+
+  setSaving(true)
+
+  try {
+    const response = await fetch('/api/credit-notes', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        saleId: sale.id,
+        refundMethod,
+        reason,
+        reasonOther: reasonOther.trim() || null,
+        notes: notes.trim() || null,
+        items: payloadItems,
+      }),
+    })
+
+    const result = await response.json().catch(() => null)
+
+    if (!response.ok) {
+      return alert(
+        'No pude crear la nota de credito: ' +
+          (result?.error || `HTTP ${response.status}`)
+      )
+    }
+
+    setCreatedCreditNoteId(result.id as string)
+    alert('Nota de credito creada correctamente')
+  } catch (error) {
+    alert(
+      'No pude crear la nota de credito: ' +
+        (error instanceof Error ? error.message : String(error))
+    )
+  } finally {
+    setSaving(false)
+  }
+}
 
   function selectedQuantity(item: SaleItem) {
     return (restockQuantities[item.id] || 0) + (damagedQuantities[item.id] || 0)

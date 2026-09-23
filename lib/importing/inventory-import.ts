@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabase'
+
 import { logAudit } from '@/lib/audit'
 import { INVENTORY_TEMPLATE_COLUMNS } from '@/lib/export/shared-templates'
 import { ImportMode, ImportPreview, ImportPreviewRow, normalizeTextKey, parseNumber, readExcelTable } from './excel-import'
@@ -166,57 +166,80 @@ export async function previewInventoryImport(params: { file: File; products: Exi
   return { headers: table.headers, rows } as ImportPreview<InventoryImportData>
 }
 
-export async function commitInventoryImport(params: { storeId: string; preview: ImportPreview<InventoryImportData>; mode: ImportMode; allowBlankClear: boolean; createCategories: boolean; stockTreatment: InventoryStockTreatment }) {
-  const validRows = params.preview.rows.filter((row) => !['error', 'duplicate', 'skip'].includes(row.action))
-  let created = 0, updated = 0, errors = 0
+export async function commitInventoryImport(params: {
+  storeId: string
+  preview: ImportPreview<InventoryImportData>
+  mode: ImportMode
+  allowBlankClear: boolean
+  createCategories: boolean
+  stockTreatment: InventoryStockTreatment
+}) {
+  const validRows = params.preview.rows.filter(
+    (row) => !['error', 'duplicate', 'skip'].includes(row.action)
+  )
+
   const omitted = params.preview.rows.length - validRows.length
-  const categories = [...new Set(validRows.map((row) => row.data.category).filter(Boolean))]
-  if (categories.length) await supabase.from('categories').upsert(categories.map((name) => ({ store_id: params.storeId, name, active: true })), { onConflict: 'store_id,name' })
 
-  for (const row of validRows) {
-    const finalStock = row.existingId && params.stockTreatment === 'add' ? Number(row.data.existingStock || 0) + row.data.stock : row.data.stock
-    const payload: Record<string, unknown> = {
-      store_id: params.storeId,
-      name: row.data.name,
-      sku: row.data.finalSku,
-      barcode: row.data.finalBarcode,
-      category: row.data.category,
-      stock: finalStock,
-      cost: row.data.cost,
-      sale_price: row.data.sale_price,
-    }
-    if (row.data.active !== null) payload.active = row.data.active
-    if (!row.existingId) {
-      payload.active = true
-      payload.product_type = 'normal'
-      payload.show_on_website = true
-      payload.web_visibility = 'normal'
-      payload.featured = false
+  const response = await fetch('/api/inventory-import', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      stockTreatment: params.stockTreatment,
+      rows: validRows.map((row) => ({
+        existingId: row.existingId || undefined,
+        name: row.data.name,
+        sku: row.data.finalSku || undefined,
+        barcode: row.data.finalBarcode || undefined,
+        category: row.data.category,
+        stock: row.data.stock,
+        existingStock: Number(row.data.existingStock || 0),
+        cost: row.data.cost,
+        salePrice: row.data.sale_price,
+        active: row.data.active,
+      })),
+    }),
+  })
+
+  if (!response.ok) {
+    let message = 'No se pudo completar la importación de inventario.'
+
+    try {
+      const errorData = (await response.json()) as { error?: string }
+      if (errorData.error) message = errorData.error
+    } catch {
+      // Mantener mensaje predeterminado.
     }
 
-    if (row.existingId) {
-      const previousStock = Number(row.data.existingStock || 0)
-      const difference = finalStock - previousStock
-      const { error } = await supabase.from('products').update(payload).eq('store_id', params.storeId).eq('id', row.existingId)
-      if (error) { console.error('Inventory import update error', error); row.action = 'error'; row.errors.push('No se pudo actualizar el producto.'); errors += 1; continue }
-      row.data.productId = row.existingId
-      updated += 1
-      if (difference !== 0) {
-        await supabase.from('inventory_movements').insert({ store_id: params.storeId, product_id: row.existingId, movement_type: 'adjustment', quantity: difference, previous_stock: previousStock, new_stock: finalStock, reference_type: 'inventory_import', notes: params.stockTreatment === 'add' ? 'Importación de inventario: suma de stock' : 'Importación de inventario: reemplazo de stock' })
-      }
-      await logAudit({ storeId: params.storeId, module: 'inventario', action: 'product.import_update', entityType: 'product', entityId: row.existingId, summary: `Producto importado/actualizado: ${row.data.name}.`, afterData: payload })
-    } else {
-      const { data, error } = await supabase.from('products').insert(payload).select('id').single()
-      if (error) { console.error('Inventory import create error', error); row.action = 'error'; row.errors.push('No se pudo crear el producto.'); errors += 1; continue }
-      row.data.productId = data.id
-      row.existingId = data.id
-      created += 1
-      if (row.data.stock > 0) {
-        await supabase.from('inventory_movements').insert({ store_id: params.storeId, product_id: data.id, movement_type: 'initial_stock', quantity: row.data.stock, previous_stock: 0, new_stock: row.data.stock, reference_type: 'inventory_import', notes: 'Importación de inventario: stock inicial' })
-      }
-      await logAudit({ storeId: params.storeId, module: 'inventario', action: 'product.import_create', entityType: 'product', entityId: data.id, summary: `Producto importado: ${row.data.name}.`, afterData: payload })
-    }
+    throw new Error(message)
   }
-  await logAudit({ storeId: params.storeId, module: 'inventario', action: 'inventory.import', summary: `Importación de inventario: ${created} creados, ${updated} actualizados, ${omitted} omitidos, ${errors} errores.`, metadata: { created, updated, omitted, errors, mode: params.mode, stockTreatment: params.stockTreatment } })
-  return { created, updated, omitted, errors }
+
+  const result = (await response.json()) as {
+    created: number
+    updated: number
+    errors: number
+  }
+
+  await logAudit({
+    storeId: params.storeId,
+    module: 'inventario',
+    action: 'inventory.import',
+    summary: `Importación de inventario: ${result.created} creados, ${result.updated} actualizados, ${omitted} omitidos, ${result.errors} errores.`,
+    metadata: {
+      created: result.created,
+      updated: result.updated,
+      omitted,
+      errors: result.errors,
+      mode: params.mode,
+      stockTreatment: params.stockTreatment,
+    },
+  })
+
+  return {
+    created: result.created,
+    updated: result.updated,
+    omitted,
+    errors: result.errors,
+  }
 }

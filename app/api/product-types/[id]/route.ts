@@ -1,0 +1,3 @@
+import { requireTenantContext } from '@/lib/auth/tenant-context'
+import { updateProductType, type ProductTypeInput } from '@/lib/repositories/product-types-repository'
+export async function PATCH(request:Request,{params}:{params:Promise<{id:string}>}){try{const body=await request.json() as ProductTypeInput;const value=body.value?.trim(),label=body.label?.trim();if(!value||!label)return Response.json({error:'value and label are required'},{status:400});const result=await updateProductType(await requireTenantContext(request),(await params).id,{...body,value,label});return result?Response.json(result):Response.json({error:'Not found'},{status:404})}catch(error){return Response.json({error:error instanceof Error?error.message:'Unavailable'},{status:503})}}

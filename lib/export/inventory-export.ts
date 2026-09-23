@@ -50,7 +50,7 @@ export async function exportInventory({ products, format, scope, category }: Exp
   const scopeLabel = scope === 'page' ? 'Página actual' : scope === 'active' ? 'Solo productos activos' : scope === 'low' ? 'Solo stock bajo' : scope === 'out' ? 'Solo agotados' : scope === 'category' ? `Categoría: ${category || 'Todas'}` : 'Todo el inventario'
   const document = {
     title: 'Inventario',
-    filename: `inventario-guatapo-${todayIsoDate()}.${format === 'excel' ? 'xlsx' : 'pdf'}`,
+    filename: `inventario-shopdesk-${todayIsoDate()}.${format === 'excel' ? 'xlsx' : 'pdf'}`,
     filters: [scopeLabel],
     orientation: 'landscape' as const,
     summary: [
@@ -65,7 +65,6 @@ export async function exportInventory({ products, format, scope, category }: Exp
   if (format === 'excel') return exportExcelDocument(document)
   return exportPdfDocument(document)
 }
-
 
 async function getExcelJS(): Promise<typeof import('exceljs')> {
   return await import('exceljs')
@@ -101,5 +100,5 @@ export async function downloadInventoryQuickTemplate() {
   instructions.getRow(1).font = { bold: true, size: 14 }
 
   const buffer = await workbook.xlsx.writeBuffer()
-  downloadBlob(`plantilla-rapida-inventario-guatapo-${todayIsoDate()}.xlsx`, new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+  downloadBlob(`plantilla-rapida-inventario-shopdesk-${todayIsoDate()}.xlsx`, new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
 }

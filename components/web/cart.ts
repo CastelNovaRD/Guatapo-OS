@@ -15,7 +15,7 @@ export function readCart() {
 
 export function saveCart(cart: WebCartItem[]) {
   window.localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cart))
-  window.dispatchEvent(new Event('guatapo-cart-updated'))
+  window.dispatchEvent(new Event('shopdesk-cart-updated'))
 }
 
 export function productToCartItem(product: WebProduct, quantity = 1): WebCartItem {
@@ -82,9 +82,13 @@ export function productAvailability(stock: number) {
   }
 }
 
-export function openProductWhatsApp(product: WebProduct, quantity = 1) {
+export function openProductWhatsApp(
+  product: WebProduct,
+  quantity = 1,
+  whatsappNumber = WHATSAPP_NUMBER
+) {
   const lines = [
-    'Hola Guatapo, quiero hacer un pedido:',
+    'Hola, quiero hacer un pedido:',
     '',
     `Producto: ${product.name}`,
     `Cantidad: ${quantity}`,
@@ -92,10 +96,13 @@ export function openProductWhatsApp(product: WebProduct, quantity = 1) {
     `Total: ${formatMoney(Number(product.sale_price || 0) * quantity)}`,
   ]
 
-  openWhatsApp(lines.join('\n'))
+  openWhatsApp(lines.join('\n'), whatsappNumber)
 }
 
-export function openCartWhatsApp(cart: WebCartItem[]) {
+export function openCartWhatsApp(
+  cart: WebCartItem[],
+  whatsappNumber = WHATSAPP_NUMBER
+) {
   const total = cart.reduce(
     (sum, item) => sum + Number(item.sale_price || 0) * item.quantity,
     0
@@ -108,19 +115,22 @@ export function openCartWhatsApp(cart: WebCartItem[]) {
 
   openWhatsApp(
     [
-      'Hola Guatapo, quiero hacer un pedido con estos productos:',
+      'Hola, quiero hacer un pedido con estos productos:',
       '',
       ...productLines,
       '',
       `Total aproximado: ${formatMoney(total)}`,
-    ].join('\n')
+    ].join('\n'),
+    whatsappNumber
   )
 }
 
-function openWhatsApp(message: string) {
+function openWhatsApp(message: string, whatsappNumber = WHATSAPP_NUMBER) {
+  const cleanNumber = whatsappNumber.replace(/\D/g, '')
+  if (!cleanNumber) return
+
   window.open(
-    `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(message)}`,
+    `https://wa.me/${cleanNumber}?text=${encodeURIComponent(message)}`,
     '_blank'
   )
 }
-

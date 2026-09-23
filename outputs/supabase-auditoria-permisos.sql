@@ -1,4 +1,4 @@
-﻿-- Auditoria y permisos por usuario para CastelNova OS / Guatapo OS
+﻿-- Auditoria y permisos por usuario para CastelNova OS / ShopDesk OS
 -- Ejecutar en Supabase SQL Editor del proyecto correspondiente.
 
 create extension if not exists pgcrypto;

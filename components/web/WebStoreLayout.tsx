@@ -159,7 +159,7 @@ export default function WebStoreLayout({ categories, selectedCategory, search, o
       <footer className="border-t border-zinc-200 bg-zinc-950 text-white">
         <div className="mx-auto grid max-w-7xl gap-8 px-6 py-12 sm:grid-cols-2 lg:grid-cols-5">
           <div className="lg:col-span-1">
-            {footerLogo && <img src={footerLogo} onError={() => setFooterLogoBroken(true)} alt="Guatapo" className="h-24 w-72 object-contain object-left" />}
+            {footerLogo && <img src={footerLogo} onError={() => setFooterLogoBroken(true)} alt="Logo de la tienda" className="h-24 w-72 object-contain object-left" />}
             <p className="mt-4 max-w-sm text-sm font-semibold text-zinc-300">{footerDescription}</p>
           </div>
           <div>
@@ -189,7 +189,7 @@ export default function WebStoreLayout({ categories, selectedCategory, search, o
             </div>
           </div>
         </div>
-        <div className="border-t border-white/10 px-6 py-5 text-center text-sm font-semibold text-zinc-400">Copyright {new Date().getFullYear()} Guatapo. Todos los derechos reservados.</div>
+        <div className="border-t border-white/10 px-6 py-5 text-center text-sm font-semibold text-zinc-400">Copyright {new Date().getFullYear()} {settings?.seoTitle?.split("|")[0]?.trim() || "Tienda Online"}. Todos los derechos reservados.</div>
       </footer>
       {settings?.whatsapp && (
         <a href={`https://wa.me/${settings.whatsapp}`} target="_blank" rel="noopener noreferrer" className="fixed bottom-5 right-5 z-40 flex h-16 w-16 items-center justify-center rounded-full text-white shadow-2xl transition hover:scale-105" style={{ backgroundColor: settings.primaryColor || '#009a44' }}>
@@ -199,12 +199,4 @@ export default function WebStoreLayout({ categories, selectedCategory, search, o
     </main>
   )
 }
-
-
-
-
-
-
-
-
 

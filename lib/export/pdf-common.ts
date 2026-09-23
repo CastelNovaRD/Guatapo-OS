@@ -59,7 +59,7 @@ export function exportPdfDocument(document: ExportDocument) {
 </head>
 <body>
   <header>
-    <div class="brand">GUATAPO</div>
+    <div class="brand">SHOPDESK OS</div>
     <h1>${escapeHtml(document.title)}</h1>
     <div class="meta">${escapeHtml([document.period, ...(document.filters || []), `Generado: ${new Date().toLocaleString('es-DO')}`].filter(Boolean).join(' | '))}</div>
   </header>

@@ -1,16 +1,17 @@
-﻿'use client'
+'use client'
 
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
-import { supabase } from '@/lib/supabase'
-import { BarChart3, Download, Eye, FileBadge2, Printer, RefreshCcw, Search, X } from 'lucide-react'
+import { BarChart3, CalendarDays, Download, Eye, FileBadge2, Printer, RefreshCcw, Search, X } from 'lucide-react'
 import { formatDate, formatTime, formatMoney } from '@/lib/format'
 import { getCurrentStoreId } from '@/lib/store-context'
 import ExportModal from '@/components/export/ExportModal'
 import { exportSales as exportSalesFile } from '@/lib/export/sales-export'
 import type { ExportFormat, SalesExportChannel, SalesExportPeriod, SalesExportStatus } from '@/lib/export/export-types'
 import { getSaleStatusVisual } from '@/lib/sale-status'
+import { HUB_MODULES, isFiscalSalesEnabledForPlan, isHubModuleAvailableForPlan, normalizeHubConfig } from '@/lib/hub-config'
+import { mergePermissions, PERMISSIONS, type PermissionMap } from '@/lib/permissions'
 
 type Sale = {
   id: string
@@ -19,8 +20,6 @@ type Sale = {
   discount: number
   card_fee: number
   shipping_cost: number
-  cooperative_commission_percent: number
-  cooperative_commission_amount: number
   net_received: number
   status: string
   sale_channel: string
@@ -64,6 +63,7 @@ type CreditNote = {
 }
 
 type CustomerLookup = { id: string; full_name: string }
+type SessionContext = { userRole?: string; permissions?: PermissionMap | null }
 
 export default function VentasPage() {
   const [sales, setSales] = useState<Sale[]>([])
@@ -87,45 +87,82 @@ export default function VentasPage() {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null)
   const [creditNotes, setCreditNotes] = useState<CreditNote[]>([])
   const [detailsLoading, setDetailsLoading] = useState(false)
+  const [canAccessCuadres, setCanAccessCuadres] = useState(false)
+  const [canUseFiscalSales, setCanUseFiscalSales] = useState(false)
 
   useEffect(() => {
     loadSales()
   }, [])
 
-  async function loadSales() {
-    setLoading(true)
+  useEffect(() => {
+    async function loadCashAccess() {
+      try {
+        const [hubResponse, sessionResponse] = await Promise.all([
+          fetch('/api/hub/config', { cache: 'no-store' }),
+          fetch('/api/session/context', { cache: 'no-store' }),
+        ])
+        if (!hubResponse.ok || !sessionResponse.ok) return
+
+        const hub = normalizeHubConfig(await hubResponse.json())
+        const session = await sessionResponse.json() as SessionContext
+        const permissionGranted = mergePermissions(
+          session.userRole,
+          session.permissions || null
+        )[PERMISSIONS.CASH_MANAGE]
+
+        setCanAccessCuadres(
+          Boolean(permissionGranted) &&
+            isHubModuleAvailableForPlan(hub, HUB_MODULES.cash_registers)
+        )
+        setCanUseFiscalSales(isFiscalSalesEnabledForPlan(hub))
+      } catch {
+        setCanAccessCuadres(false)
+        setCanUseFiscalSales(false)
+      }
+    }
+
+    void loadCashAccess()
+  }, [])
+
+ async function loadSales() {
+  setLoading(true)
+
+  try {
     const storeId = await getCurrentStoreId()
 
     if (!storeId) {
-      setLoading(false)
-      return alert('Este usuario no tiene una tienda asignada.')
+      alert('Este usuario no tiene una tienda asignada.')
+      return
     }
 
-    const { data, error } = await supabase
-      .from('sales')
-      .select('id, total, discount, card_fee, shipping_cost, cooperative_commission_percent, cooperative_commission_amount, net_received, status, sale_channel, created_at, customer_id, payment_method_id, ncf, invoice_number, fiscal_receipt_type, fiscal_status, fiscal_customer_name')
-      .eq('store_id', storeId)
-      .order('created_at', { ascending: false })
+    const response = await fetch('/api/sales', {
+      cache: 'no-store',
+    })
 
-    if (error) alert('Error cargando ventas: ' + error.message)
+    const result = await response.json()
 
-    setSales(data || [])
-
-    const saleIds = (data || []).map((sale) => sale.id)
-
-    if (saleIds.length) {
-      const { data: itemsData, error: itemsError } = await supabase
-        .from('sale_items')
-        .select('id, sale_id, product_name, quantity, unit_price, cost, discount, total, imei')
-        .in('sale_id', saleIds)
-
-      if (itemsError) alert('Error cargando ganancias: ' + itemsError.message)
-      setAllSaleItems(itemsData || [])
-    } else {
-      setAllSaleItems([])
+    if (!response.ok) {
+      throw new Error(
+        result?.error || 'No se pudieron cargar las ventas.'
+      )
     }
+
+    setSales(Array.isArray(result.sales) ? result.sales : [])
+    setAllSaleItems(Array.isArray(result.items) ? result.items : [])
+  } catch (error) {
+    console.error('Error cargando ventas:', error)
+
+    alert(
+      'Error cargando ventas: ' +
+        (error instanceof Error ? error.message : String(error))
+    )
+
+    setSales([])
+    setAllSaleItems([])
+  } finally {
     setLoading(false)
   }
+}
 
   function getPeriodRange() {
     const now = new Date()
@@ -190,11 +227,6 @@ export default function VentasPage() {
     0
   )
 
-  const totalCooperativeFees = filteredSales.reduce(
-    (sum, sale) => sum + Number(sale.cooperative_commission_amount || 0),
-    0
-  )
-
   const totalNet = filteredSales.reduce(
     (sum, sale) => sum + Number(sale.net_received || 0),
     0
@@ -215,8 +247,7 @@ export default function VentasPage() {
 
     return (
       itemsProfit -
-      Number(sale?.card_fee || 0) -
-      Number(sale?.cooperative_commission_amount || 0)
+      Number(sale?.card_fee || 0)
     )
   }
 
@@ -243,54 +274,46 @@ export default function VentasPage() {
   const maxChartAmount = Math.max(...chartData.map((item) => item.amount), 1)
 
   async function openSaleDetails(sale: Sale) {
-    setSelectedSale(sale)
-    setDetailsLoading(true)
-    setSaleItems([])
-    setCustomer(null)
-    setPaymentMethod(null)
-    setCreditNotes([])
+  setSelectedSale(sale)
+  setDetailsLoading(true)
+  setSaleItems([])
+  setCustomer(null)
+  setPaymentMethod(null)
+  setCreditNotes([])
 
-    const { data: itemsData, error: itemsError } = await supabase
-      .from('sale_items')
-      .select('id, sale_id, product_name, quantity, unit_price, cost, discount, total, imei')
-      .eq('sale_id', sale.id)
+  try {
+    const response = await fetch(
+      `/api/sales?saleId=${encodeURIComponent(sale.id)}`,
+      {
+        cache: 'no-store',
+      }
+    )
 
-    if (itemsError) {
-      alert('Error cargando productos de la venta: ' + itemsError.message)
-    } else {
-      setSaleItems(itemsData || [])
+    const result = await response.json()
+
+    if (!response.ok) {
+      throw new Error(
+        result?.error || 'No se pudo cargar el detalle de la venta.'
+      )
     }
 
-    if (sale.customer_id) {
-      const { data: customerData } = await supabase
-        .from('customers')
-        .select('full_name, phone, cedula')
-        .eq('id', sale.customer_id)
-        .maybeSingle()
+    setSaleItems(Array.isArray(result.items) ? result.items : [])
+    setCustomer(result.customer || null)
+    setPaymentMethod(result.paymentMethod || null)
+    setCreditNotes(
+      Array.isArray(result.creditNotes) ? result.creditNotes : []
+    )
+  } catch (error) {
+    console.error('Error cargando detalle de venta:', error)
 
-      setCustomer(customerData || null)
-    }
-
-    if (sale.payment_method_id) {
-      const { data: methodData } = await supabase
-        .from('payment_methods')
-        .select('name')
-        .eq('id', sale.payment_method_id)
-        .maybeSingle()
-
-      setPaymentMethod(methodData || null)
-    }
-
-    const { data: creditNoteRows } = await supabase
-      .from('credit_notes')
-      .select('id, sale_id, credit_note_number, total, created_at')
-      .eq('sale_id', sale.id)
-      .order('created_at', { ascending: false })
-
-    setCreditNotes(creditNoteRows || [])
-
+    alert(
+      'Error cargando detalle de venta: ' +
+        (error instanceof Error ? error.message : String(error))
+    )
+  } finally {
     setDetailsLoading(false)
   }
+}
 
   function closeDetails() {
     setSelectedSale(null)
@@ -354,16 +377,31 @@ export default function VentasPage() {
     const customerMap = new Map<string, string>()
     const methodMap = new Map<string, string>()
 
-    if (customerIds.length) {
-      const { data } = await supabase.from('customers').select('id, full_name').in('id', customerIds)
-      ;(data || []).forEach((item: CustomerLookup) => customerMap.set(item.id, item.full_name || ''))
-    }
+    if (customerIds.length || methodIds.length) {
+  const response = await fetch('/api/sales?mode=export', {
+    cache: 'no-store',
+  })
 
-    if (methodIds.length) {
-      const { data } = await supabase.from('payment_methods').select('id, name').in('id', methodIds)
-      ;(data || []).forEach((item: any) => methodMap.set(item.id, item.name || ''))
-    }
+  const result = await response.json()
 
+  if (!response.ok) {
+    throw new Error(
+      result?.error || 'No se pudieron cargar los datos para exportar.'
+    )
+  }
+
+  ;(Array.isArray(result.customers) ? result.customers : []).forEach(
+    (item: CustomerLookup) => {
+      customerMap.set(item.id, item.full_name || '')
+    }
+  )
+
+  ;(Array.isArray(result.paymentMethods) ? result.paymentMethods : []).forEach(
+    (item: { id: string; name: string }) => {
+      methodMap.set(item.id, item.name || '')
+    }
+  )
+}
     const rows = periodSales.map((sale) => {
       const items = allSaleItems.filter((item) => item.sale_id === sale.id)
       const cost = items.reduce((sum, item) => sum + Number(item.cost || 0) * Number(item.quantity || 0), 0)
@@ -379,7 +417,6 @@ export default function VentasPage() {
         cost,
         profit: profitForSale(sale.id),
         cardFee: Number(sale.card_fee || 0),
-        cooperativeFee: Number(sale.cooperative_commission_amount || 0),
         shipping: Number(sale.shipping_cost || 0),
       }
     })
@@ -400,7 +437,7 @@ export default function VentasPage() {
       <div className="mb-8 flex items-start justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-3 text-3xl font-bold">
-            <BarChart3 className="text-emerald-500" />
+            <BarChart3 className="text-castelnova-600" />
             Ventas
           </h1>
           <p className="text-zinc-500">
@@ -434,20 +471,31 @@ export default function VentasPage() {
             Cambio
           </Link>
 
-          <Link
-            href="/ventas/comprobantes"
-            className="inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 font-semibold text-white hover:bg-emerald-600"
-          >
-            <FileBadge2 size={18} />
-            Comprobantes
-          </Link>
+          {canAccessCuadres ? (
+            <Link
+              href="/cuadres"
+              className="inline-flex items-center gap-2 rounded-xl border border-zinc-300 bg-white px-5 py-3 font-semibold text-zinc-800 hover:bg-zinc-100"
+            >
+              <CalendarDays size={18} />
+              Cuadres
+            </Link>
+          ) : null}
+
+          {canUseFiscalSales ? (
+            <Link
+              href="/ventas/comprobantes"
+              className="inline-flex items-center gap-2 rounded-xl bg-castelnova-600 px-5 py-3 font-semibold text-white hover:bg-castelnova-700"
+            >
+              <FileBadge2 size={18} />
+              Comprobantes
+            </Link>
+          ) : null}
         </div>
       </div>
 
-      <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-4">
+      <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3">
         <StatCard title="Total ventas" value={formatMoney(totalSales)} />
         <StatCard title="Comision tarjeta" value={formatMoney(totalFees)} red />
-        <StatCard title="Comision cooperativa" value={formatMoney(totalCooperativeFees)} red />
         <StatCard title="Neto recibido" value={formatMoney(totalNet)} />
       </div>
 
@@ -468,7 +516,7 @@ export default function VentasPage() {
                   type="button"
                   onClick={() => setPeriod(option)}
                   className={`rounded-lg px-4 py-2 text-sm font-bold ${
-                    period === option ? 'bg-emerald-500 text-white' : 'text-zinc-700 hover:bg-white'
+                    period === option ? 'bg-castelnova-600 text-white' : 'text-zinc-700 hover:bg-white'
                   }`}
                 >
                   {option === 'day' ? 'Día' : option === 'month' ? 'Mes' : option === 'year' ? 'Año' : 'Rango'}
@@ -485,7 +533,7 @@ export default function VentasPage() {
                   type="date"
                   value={fromDate}
                   onChange={(e) => setFromDate(e.target.value)}
-                  className="rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-emerald-500"
+                  className="rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-castelnova-600"
                 />
               </div>
               <div>
@@ -494,7 +542,7 @@ export default function VentasPage() {
                   type="date"
                   value={toDate}
                   onChange={(e) => setToDate(e.target.value)}
-                  className="rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-emerald-500"
+                  className="rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-castelnova-600"
                 />
               </div>
             </>
@@ -509,7 +557,7 @@ export default function VentasPage() {
         <div className="mt-6">
           <div className="mb-3 flex items-center justify-between gap-4">
             <h2 className="font-bold">Gráfica de ventas</h2>
-            <p className="text-sm font-semibold text-emerald-700">
+            <p className="text-sm font-semibold text-castelnova-700">
               Mayor venta: {bestChartPoint.label} · {formatMoney(bestChartPoint.amount)}
             </p>
           </div>
@@ -519,7 +567,7 @@ export default function VentasPage() {
               <div key={`${item.label}-${index}`} className="flex min-w-0 flex-1 flex-col items-center gap-2">
                 <div
                   title={formatMoney(item.amount)}
-                  className={`w-full rounded-t-lg ${item.label === bestChartPoint.label ? 'bg-emerald-500' : 'bg-zinc-300'}`}
+                  className={`w-full rounded-t-lg ${item.label === bestChartPoint.label ? 'bg-castelnova-600' : 'bg-zinc-300'}`}
                   style={{ height: `${Math.max(6, (item.amount / maxChartAmount) * 160)}px` }}
                 />
                 <span className="text-xs font-semibold uppercase text-zinc-600">{item.label}</span>
@@ -530,7 +578,7 @@ export default function VentasPage() {
       </div>
 
       <div className="mb-6 flex items-center gap-3 rounded-2xl border border-zinc-200 bg-white px-4 py-3 shadow-sm">
-        <Search className="text-emerald-500" size={20} />
+        <Search className="text-castelnova-600" size={20} />
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -599,7 +647,7 @@ export default function VentasPage() {
                     <td className="p-4">{formatMoney(sale.discount)}</td>
 
                     <td className="p-4 text-red-500">
-                      {formatMoney(Number(sale.card_fee || 0) + Number(sale.cooperative_commission_amount || 0))}
+                      {formatMoney(Number(sale.card_fee || 0))}
                     </td>
 
                     <td className="p-4 font-semibold">
@@ -721,7 +769,7 @@ export default function VentasPage() {
                             </p>
 
                             {item.imei && (
-                              <p className="mt-1 text-sm font-medium text-emerald-600">
+                              <p className="mt-1 text-sm font-medium text-castelnova-600">
                                 IMEI/Serial: {item.imei}
                               </p>
                             )}
@@ -745,11 +793,6 @@ export default function VentasPage() {
                   <Row label="Total" value={formatMoney(selectedSale.total)} bold />
                   <Row label="Descuento" value={formatMoney(selectedSale.discount)} />
                   <Row label="Comision tarjeta" value={formatMoney(selectedSale.card_fee)} red />
-                  <Row
-                    label={`Comision cooperativa (${Number(selectedSale.cooperative_commission_percent || 0)}%)`}
-                    value={formatMoney(selectedSale.cooperative_commission_amount || 0)}
-                    red
-                  />
                   <Row label="Neto recibido" value={formatMoney(selectedSale.net_received)} bold />
                   <Row label="Ganancias" value={formatMoney(profitForSale(selectedSale.id))} bold />
                 </div>
@@ -775,7 +818,7 @@ export default function VentasPage() {
 
                   <button
                     onClick={closeDetails}
-                    className="rounded-xl bg-emerald-500 px-5 py-3 font-bold text-white hover:bg-emerald-600"
+                    className="rounded-xl bg-castelnova-600 px-5 py-3 font-bold text-white hover:bg-castelnova-700"
                   >
                     Cerrar
                   </button>
@@ -797,7 +840,7 @@ export default function VentasPage() {
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block">
             <span className="mb-1 block text-sm font-bold text-zinc-700">Periodo</span>
-            <select value={exportPeriod} onChange={(e) => setExportPeriod(e.target.value as SalesExportPeriod)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500">
+            <select value={exportPeriod} onChange={(e) => setExportPeriod(e.target.value as SalesExportPeriod)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600">
               <option value="day">Día</option>
               <option value="month">Mes</option>
               <option value="year">Año</option>
@@ -806,20 +849,19 @@ export default function VentasPage() {
           </label>
           <label className="block">
             <span className="mb-1 block text-sm font-bold text-zinc-700">Canal</span>
-            <select value={exportChannel} onChange={(e) => setExportChannel(e.target.value as SalesExportChannel)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500">
+            <select value={exportChannel} onChange={(e) => setExportChannel(e.target.value as SalesExportChannel)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600">
               <option value="all">Todos</option>
               <option value="pos">POS</option>
-              <option value="cooperative">Cooperativa</option>
               <option value="quotation">Cotización</option>
             </select>
           </label>
           {exportPeriod === 'custom' && <>
-            <label className="block"><span className="mb-1 block text-sm font-bold text-zinc-700">Fecha inicial</span><input type="date" value={exportFromDate} onChange={(e) => setExportFromDate(e.target.value)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500" /></label>
-            <label className="block"><span className="mb-1 block text-sm font-bold text-zinc-700">Fecha final</span><input type="date" value={exportToDate} onChange={(e) => setExportToDate(e.target.value)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500" /></label>
+            <label className="block"><span className="mb-1 block text-sm font-bold text-zinc-700">Fecha inicial</span><input type="date" value={exportFromDate} onChange={(e) => setExportFromDate(e.target.value)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600" /></label>
+            <label className="block"><span className="mb-1 block text-sm font-bold text-zinc-700">Fecha final</span><input type="date" value={exportToDate} onChange={(e) => setExportToDate(e.target.value)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600" /></label>
           </>}
           <label className="block sm:col-span-2">
             <span className="mb-1 block text-sm font-bold text-zinc-700">Estado</span>
-            <select value={exportStatus} onChange={(e) => setExportStatus(e.target.value as SalesExportStatus)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500">
+            <select value={exportStatus} onChange={(e) => setExportStatus(e.target.value as SalesExportStatus)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600">
               <option value="all">Todos</option>
               <option value="paid">Pagada</option>
               <option value="pending">Pendiente</option>
@@ -956,7 +998,7 @@ function FiscalStatusBadge({ status }: { status: string | null }) {
     pending: 'bg-orange-50 text-orange-700',
     ready_to_send: 'bg-blue-50 text-blue-700',
     sent: 'bg-violet-50 text-violet-700',
-    accepted: 'bg-emerald-50 text-emerald-700',
+    accepted: 'bg-emerald-50 text-castelnova-700',
     rejected: 'bg-red-50 text-red-600',
     voided: 'bg-zinc-100 text-zinc-600',
   }
@@ -1039,5 +1081,6 @@ function Row({
     </div>
   )
 }
+
 
 

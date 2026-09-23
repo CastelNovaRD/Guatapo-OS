@@ -5,7 +5,6 @@ import { usePathname, useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import {
   BarChart3,
-  Building2,
   FileText,
   Globe,
   Home,
@@ -21,30 +20,31 @@ import {
   ShoppingCart,
   Store,
   Users,
-  CalendarDays,
+
   WalletCards,
-  Ticket,
 } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
 import { mergePermissions, PERMISSIONS, type PermissionMap, type PermissionKey } from '@/lib/permissions'
 import {
   DEFAULT_HUB_CONFIG,
+  ECONOMIC_PLAN_MODULES,
   HUB_MODULES,
   getHubModuleForPath,
-  isHubModuleEnabled,
+  isHubModuleAvailableForPlan,
+  isEconomicPlan,
   normalizeHubConfig,
   type HubConfig,
   type HubNotification,
-} from '@/lib/castelnova-hub'
+} from '@/lib/hub-config'
 import { APP_NAME, APP_VERSION } from '@/lib/version'
 
-const CLIENT_LOGO_STORAGE_PREFIX = 'castelnova_store_logo_'
 const HUB_CONFIG_CACHE_KEY = 'castelnova_hub_config_cache'
 
 type CashStatus = 'loading' | 'open' | 'closed' | 'error'
 type StoreContext = {
   platformName: string
   storeName: string
+  storeSlug: string
+  storeLogoUrl: string | null
   systemName: string
   userName: string
   userRole: string
@@ -69,97 +69,46 @@ export default function AppShell({
   const [authenticated, setAuthenticated] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(defaultSidebarOpen)
   const [logoFailed, setLogoFailed] = useState(false)
-  const [clientLogoUrl, setClientLogoUrl] = useState('')
   const [hubConfig, setHubConfig] = useState<HubConfig>(DEFAULT_HUB_CONFIG)
   const [hubNotice, setHubNotice] = useState('')
   const [notificationsOpen, setNotificationsOpen] = useState(false)
-  const [pendingRafflePayments, setPendingRafflePayments] = useState(0)
   const [context, setContext] = useState<StoreContext>({
-    platformName: 'CastelNova ERP',
-    storeName: 'Guatapo SRL',
-    systemName: 'Guatapo OS',
+    platformName: 'CastelNova OS',
+    storeName: 'Tienda',
+    storeSlug: '',
+    storeLogoUrl: null,
+    systemName: 'ShopDesk OS',
     userName: 'Usuario',
     userRole: 'Administrador',
     permissions: mergePermissions('admin'),
   })
 
   useEffect(() => {
-    let active = true
+  void loadSessionContext()
+}, [])
 
-    async function initializeAuth() {
-      await loadSessionContext({ redirectIfMissing: true })
-    }
-
-    void initializeAuth()
-
-    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
-      console.info('[Auth] Evento:', event)
-
-      if (!active) return
-
-      if (event === 'SIGNED_OUT') {
-        setAuthenticated(false)
-        setCurrentStoreId(null)
-        setCashStatus('loading')
-        setAuthLoading(false)
-        router.replace('/login')
-        return
-      }
-
-      if (event === 'TOKEN_REFRESHED') {
-        console.info('[Auth] Token renovado correctamente')
-      }
-
-      if (session?.user && ['INITIAL_SESSION', 'SIGNED_IN', 'TOKEN_REFRESHED', 'USER_UPDATED'].includes(event)) {
-        void loadSessionContext({ redirectIfMissing: false })
-      }
-    })
-
-    return () => {
-      active = false
-      authListener.subscription.unsubscribe()
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!currentStoreId) return
-
-    loadClientLogo(currentStoreId)
-
-    const refreshLogo = () => loadClientLogo(currentStoreId)
-    window.addEventListener('guatapo:store-logo-updated', refreshLogo)
-    window.addEventListener('storage', refreshLogo)
-
-    return () => {
-      window.removeEventListener('guatapo:store-logo-updated', refreshLogo)
-      window.removeEventListener('storage', refreshLogo)
-    }
-  }, [currentStoreId])
 
   useEffect(() => {
     if (authLoading) return
 
     loadHubConfig()
     loadCashStatus()
-    loadPendingRafflePayments()
 
-    const refresh = () => { loadCashStatus(); loadPendingRafflePayments() }
+    const refresh = () => { loadCashStatus() }
     const refreshHub = () => loadHubConfig()
     const hubInterval = window.setInterval(loadHubConfig, 60000)
-    const raffleInterval = window.setInterval(loadPendingRafflePayments, 30000)
     const interval = window.setInterval(refresh, 15000)
 
     window.addEventListener('focus', refresh)
     window.addEventListener('focus', refreshHub)
-    window.addEventListener('guatapo:cash-updated', refresh)
+    window.addEventListener('shopdesk:cash-updated', refresh)
 
     return () => {
       window.clearInterval(hubInterval)
-      window.clearInterval(raffleInterval)
       window.clearInterval(interval)
       window.removeEventListener('focus', refresh)
       window.removeEventListener('focus', refreshHub)
-      window.removeEventListener('guatapo:cash-updated', refresh)
+      window.removeEventListener('shopdesk:cash-updated', refresh)
     }
   }, [authLoading, currentStoreId])
 
@@ -206,179 +155,114 @@ export default function AppShell({
     }
   }
 
-  async function loadSessionContext({ redirectIfMissing = true }: { redirectIfMissing?: boolean } = {}) {
-    setAuthLoading(true)
+  async function loadSessionContext() {
+  setAuthLoading(true)
 
-    try {
-      let user = null as Awaited<ReturnType<typeof supabase.auth.getUser>>['data']['user'] | null
-      let lastAuthError = ''
+  try {
+    const response = await fetch('/api/session/context', {
+      method: 'GET',
+      cache: 'no-store',
+    })
 
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null)
+      const message =
+        payload && typeof payload.error === 'string'
+          ? payload.error
+          : 'No se pudo cargar el contexto del sistema.'
 
-        if (sessionData.session?.user) {
-          user = sessionData.session.user
-          break
-        }
-
-        if (sessionError) lastAuthError = sessionError.message
-
-        const { data: userData, error: userError } = await supabase.auth.getUser()
-
-        if (userData.user) {
-          user = userData.user
-          console.info('[Auth] Sesion recuperada desde getUser()')
-          break
-        }
-
-        if (userError && userError.name !== 'AuthSessionMissingError') {
-          lastAuthError = userError.message
-        }
-
-        await new Promise((resolve) => window.setTimeout(resolve, 200))
-      }
-
-      if (!user) {
-        console.warn('[Auth] Sesion no disponible', lastAuthError)
-        setAuthenticated(false)
-        if (redirectIfMissing) router.replace('/login')
-        return
-      }
-
-      const { data: profile } = await supabase
-        .from('app_profiles')
-        .select('full_name, role')
-        .eq('id', user.id)
-        .maybeSingle()
-
-      const membershipResult = await supabase
-        .from('store_users')
-        .select('role, store_id, permissions')
-        .eq('user_id', user.id)
-        .eq('active', true)
-        .limit(1)
-        .maybeSingle()
-
-      let membership = membershipResult.data as { role?: string | null; store_id?: string | null; permissions?: PermissionMap | null } | null
-
-      if (membershipResult.error && membershipResult.error.code === '42703') {
-        const fallbackMembership = await supabase
-          .from('store_users')
-          .select('role, store_id')
-          .eq('user_id', user.id)
-          .eq('active', true)
-          .limit(1)
-          .maybeSingle()
-        membership = fallbackMembership.data as { role?: string | null; store_id?: string | null; permissions?: PermissionMap | null } | null
-      }
-
-      if (membershipResult.error && membershipResult.error.code !== '42703') {
-        console.warn('[Auth] No se pudo cargar la tienda del usuario:', membershipResult.error.message)
-      }
-
-      let store: { name: string | null; system_name: string | null } | null = null
-
-      if (membership?.store_id) {
-        const { data: storeData, error: storeError } = await supabase
-          .from('stores')
-          .select('name, system_name')
-          .eq('id', membership.store_id)
-          .maybeSingle()
-
-        if (storeError) console.warn('[Auth] Error cargando tienda:', storeError.message)
-        store = storeData
-      }
-
-      const storeName = store?.name || 'Guatapo SRL'
-      const baseRole = membership?.role || profile?.role || 'Administrador'
-
-      setAuthenticated(true)
-      setCurrentStoreId(membership?.store_id || null)
-      setContext({
-        platformName: 'CastelNova ERP',
-        storeName,
-        systemName: store?.system_name || 'Guatapo OS',
-        userName: storeName,
-        userRole: baseRole,
-        permissions: mergePermissions(baseRole, membership?.permissions || null),
-      })
-      console.info('[Auth] Sesion y contexto recuperados')
-    } catch (error) {
-      console.error('Error cargando contexto del sistema', error)
-    } finally {
-      setAuthLoading(false)
+      throw new Error(message)
     }
+
+    const data = (await response.json()) as {
+      storeId: string
+      platformName: string
+      storeName: string
+      storeSlug: string
+      storeLogoUrl: string | null
+      systemName: string
+      userName: string
+      userRole: string
+      permissions: PermissionMap | null
+    }
+
+    setAuthenticated(true)
+    setCurrentStoreId(data.storeId)
+
+    setContext({
+      platformName: data.platformName || 'CastelNova OS',
+      storeName: data.storeName || 'Tienda',
+      storeSlug: data.storeSlug || '',
+      storeLogoUrl: data.storeLogoUrl || null,
+      systemName: data.systemName || 'ShopDesk OS',
+      userName: data.userName || 'Usuario',
+      userRole: data.userRole || 'Administrador',
+      permissions: mergePermissions(data.userRole, data.permissions),
+    })
+
+    console.info('[Auth] Contexto ShopDesk recuperado')
+  } catch (error) {
+    console.error('[Auth] Error cargando contexto del sistema:', error)
+    setAuthenticated(false)
+    setCurrentStoreId(null)
+  } finally {
+    setAuthLoading(false)
   }
-
-  async function loadPendingRafflePayments() {
-    if (!currentStoreId) {
-      setPendingRafflePayments(0)
-      return
-    }
-
-    try {
-      const { count, error } = await supabase
-        .from('raffle_payments')
-        .select('id', { count: 'exact', head: true })
-        .eq('store_id', currentStoreId)
-        .in('status', ['pending', 'correction'])
-
-      if (error) {
-        setPendingRafflePayments(0)
-        return
-      }
-
-      setPendingRafflePayments(count || 0)
-    } catch {
-      setPendingRafflePayments(0)
-    }
-  }
+}
 
   async function loadCashStatus() {
-    if (!currentStoreId) {
-      setCashStatus('loading')
+  if (!currentStoreId) {
+    setCashStatus('loading')
+    return
+  }
+
+  setCashStatus('loading')
+
+  try {
+    const response = await fetch('/api/cash-registers?status=open', {
+      method: 'GET',
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null)
+      console.warn(
+        '[Caja] No se pudo verificar la caja:',
+        payload?.error || `HTTP ${response.status}`
+      )
+      setCashError('No se pudo verificar la caja. Reintentando...')
+      setCashStatus('error')
       return
     }
 
-    setCashStatus('loading')
+    const registers = (await response.json()) as Array<{ id: string }>
 
-    try {
-      const { data, error } = await supabase
-        .from('cash_registers')
-        .select('id')
-        .eq('store_id', currentStoreId)
-        .eq('status', 'open')
-        .is('closed_at', null)
-        .order('opened_at', { ascending: false })
-        .limit(1)
-        .maybeSingle()
+    setCashError('')
+    setCashStatus(registers.length > 0 ? 'open' : 'closed')
 
-      if (error) {
-        console.warn('[Caja] Error consultando caja abierta:', error.message)
-        setCashError('No se pudo verificar la caja. Reintentando...')
-        setCashStatus('error')
-        return
-      }
-
-      setCashError('')
-      setCashStatus(data ? 'open' : 'closed')
-      if (data) console.info('[Caja] Caja abierta recuperada:', data.id)
-    } catch (error) {
-      console.warn('[Caja] Error de red verificando caja:', error)
-      setCashError('No se pudo verificar la caja. Reintentando...')
-      setCashStatus('error')
+    if (registers[0]) {
+      console.info('[Caja] Caja abierta recuperada:', registers[0].id)
     }
+  } catch (error) {
+    console.warn('[Caja] Error de red verificando caja:', error)
+    setCashError('No se pudo verificar la caja. Reintentando...')
+    setCashStatus('error')
   }
+}
 
-  function loadClientLogo(storeId: string) {
-    if (typeof window === 'undefined') return
-    setClientLogoUrl(window.localStorage.getItem(`${CLIENT_LOGO_STORAGE_PREFIX}${storeId}`) || '')
-  }
 
-  async function signOut() {
-    await supabase.auth.signOut()
+ async function signOut() {
+  try {
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+    })
+  } catch (error) {
+    console.error('[Auth] Error cerrando sesion:', error)
+  } finally {
     router.replace('/login')
+    router.refresh()
   }
+}
 
   if (authLoading) {
     return (
@@ -397,14 +281,18 @@ export default function AppShell({
   }
 
   const canOpen = (permission: PermissionKey, moduleName?: string) =>
-    Boolean(context.permissions[permission]) && isHubModuleEnabled(hubConfig, moduleName || null)
+    Boolean(context.permissions[permission]) && isHubModuleAvailableForPlan(hubConfig, moduleName || null)
 
   const unreadNotifications = hubConfig.notifications.filter(
     (notification) => !notification.read && !notification.archived
   )
   const visibleNotifications = hubConfig.notifications.filter((notification) => !notification.archived)
   const currentHubModule = getHubModuleForPath(pathname)
-  const moduleBlocked = !isHubModuleEnabled(hubConfig, currentHubModule)
+  const moduleBlocked = !isHubModuleAvailableForPlan(hubConfig, currentHubModule)
+  const economicPlanNavigationEnabled = isEconomicPlan(hubConfig.plan)
+  const publicCatalogHref = context.storeSlug
+    ? `/catalogo?store=${encodeURIComponent(context.storeSlug)}`
+    : '/catalogo'
   const systemBlocked =
     ['suspended', 'expired'].includes(hubConfig.status) && !pathname.startsWith('/configuracion')
   const maintenanceActive = hubConfig.status === 'maintenance'
@@ -423,20 +311,7 @@ export default function AppShell({
       permission: PERMISSIONS.POS_USE,
       moduleKey: HUB_MODULES.pos,
     },
-    {
-      href: '/cooperativas',
-      icon: <Building2 size={18} />,
-      text: 'POS Cooperativa',
-      permission: PERMISSIONS.COOPERATIVES_MANAGE,
-      moduleKey: HUB_MODULES.cooperatives,
-    },
-    {
-      href: '/cuadres',
-      icon: <CalendarDays size={18} />,
-      text: 'Cuadres',
-      permission: PERMISSIONS.CASH_MANAGE,
-      moduleKey: HUB_MODULES.cash_registers,
-    },
+
     {
       href: '/ventas',
       icon: <BarChart3 size={18} />,
@@ -501,14 +376,6 @@ export default function AppShell({
       moduleKey: HUB_MODULES.employees,
     },
     {
-      href: '/rifas',
-      icon: <Ticket size={18} />,
-      text: 'Rifas',
-      badge: pendingRafflePayments,
-      permission: PERMISSIONS.RAFFLES_MANAGE,
-      moduleKey: HUB_MODULES.raffles,
-    },
-    {
       href: '/configuracion/web',
       icon: <Globe size={18} />,
       text: 'Tienda Web',
@@ -522,7 +389,11 @@ export default function AppShell({
       permission: PERMISSIONS.SETTINGS_MANAGE,
       moduleKey: HUB_MODULES.settings,
     },
-  ].filter((item) => canOpen(item.permission, item.moduleKey))
+  ].filter(
+    (item) =>
+      canOpen(item.permission, item.moduleKey) &&
+      (!economicPlanNavigationEnabled || ECONOMIC_PLAN_MODULES.has(item.moduleKey))
+  )
 
   function updateNotification(id: string, patch: Partial<HubNotification>) {
     setHubConfig((current) => {
@@ -539,7 +410,7 @@ export default function AppShell({
     })
   }
 
-  const userInitials = context.userName
+  const tenantInitials = context.storeName
     .split(' ')
     .filter(Boolean)
     .slice(0, 2)
@@ -554,7 +425,7 @@ export default function AppShell({
             <button
               type="button"
               onClick={() => setSidebarOpen((value) => !value)}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-zinc-600 hover:bg-emerald-50 hover:text-emerald-700"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-zinc-600 hover:bg-castelnova-50 hover:text-castelnova-700"
               aria-label="Abrir menu"
             >
               <Menu size={22} />
@@ -575,13 +446,13 @@ export default function AppShell({
 
         <div className="flex items-center gap-3">
           <a
-            href="/web"
+            href={economicPlanNavigationEnabled ? publicCatalogHref : '/web'}
             target="_blank"
             rel="noopener noreferrer"
-            className="hidden items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 lg:inline-flex"
+            className="hidden items-center gap-2 rounded-xl bg-castelnova-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-castelnova-700 lg:inline-flex"
           >
             <ExternalLink size={17} />
-            <span>Ver Mi Tienda</span>
+            <span>{economicPlanNavigationEnabled ? 'Ver mi catálogo' : 'Ver Mi Tienda'}</span>
           </a>
 
           <button
@@ -597,12 +468,12 @@ export default function AppShell({
             <button
               type="button"
               onClick={() => setNotificationsOpen((value) => !value)}
-              className="relative flex h-10 w-10 items-center justify-center rounded-xl text-zinc-600 hover:bg-emerald-50 hover:text-emerald-700"
+              className="relative flex h-10 w-10 items-center justify-center rounded-xl text-zinc-600 hover:bg-castelnova-50 hover:text-castelnova-700"
               aria-label="Notificaciones"
             >
               <Bell size={20} />
               {unreadNotifications.length > 0 && (
-                <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-emerald-600 px-1 text-[11px] font-black text-white ring-2 ring-white">
+                <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-castelnova-500 px-1 text-[11px] font-black text-white ring-2 ring-white">
                   {unreadNotifications.length}
                 </span>
               )}
@@ -623,7 +494,7 @@ export default function AppShell({
                       <div
                         key={notification.id}
                         className={`border-b border-zinc-100 px-4 py-3 last:border-b-0 ${
-                          notification.read ? 'bg-white' : 'bg-emerald-50/60'
+                          notification.read ? 'bg-white' : 'bg-castelnova-50/60'
                         }`}
                       >
                         <div className="flex items-start justify-between gap-3">
@@ -679,19 +550,17 @@ export default function AppShell({
           </div>
 
           <div className="hidden text-right sm:block">
-            <p className="text-sm font-bold text-zinc-950">{context.userName}</p>
-            <p className="text-xs capitalize text-zinc-500">{context.userRole}</p>
+            <p className="text-sm font-bold text-zinc-950">{context.storeName}</p>
           </div>
-          <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-emerald-700 text-sm font-black text-white ring-1 ring-zinc-200">
-            {clientLogoUrl ? (
+          <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-white text-sm font-black text-castelnova-700 ring-1 ring-zinc-200">
+            {context.storeLogoUrl ? (
               <img
-                src={clientLogoUrl}
-                alt={context.userName}
-                className="h-full w-full object-cover"
-                onError={() => setClientLogoUrl('')}
+                src={context.storeLogoUrl}
+                alt={`Logo de ${context.storeName}`}
+                className="h-full w-full object-contain p-1"
               />
             ) : (
-              userInitials
+              tenantInitials
             )}
           </div>
         </div>
@@ -702,15 +571,17 @@ export default function AppShell({
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="rounded-2xl bg-emerald-50 p-4">
-          <p className="text-lg font-black text-emerald-700">{context.storeName}</p>
-          <p className="mt-1 text-sm font-medium text-zinc-600">{context.systemName}</p>
+        <div className="rounded-2xl bg-castelnova-50 p-4">
+          <p className="text-lg font-black text-castelnova-700">{context.storeName} OS</p>
+          <p className="mt-1 text-sm font-semibold text-zinc-600">ShopDesk OS</p>
+          <p className="mt-3 text-sm font-bold text-zinc-800">{context.userName}</p>
+          <p className="text-xs capitalize text-zinc-500">{context.userRole}</p>
         </div>
 
         <div
           className={`mt-4 rounded-xl px-4 py-3 text-sm font-semibold ${
             cashStatus === 'open'
-              ? 'bg-emerald-50 text-emerald-700'
+              ? 'bg-castelnova-50 text-castelnova-700'
               : cashStatus === 'loading'
                 ? 'bg-zinc-100 text-zinc-500'
                 : cashStatus === 'error'
@@ -729,7 +600,7 @@ export default function AppShell({
 
         <nav className="mt-6 space-y-1 pb-8">
           {sidebarItems.map((item) => (
-            <MenuItem key={item.href} href={item.href} icon={item.icon} text={item.text} badge={'badge' in item ? item.badge : 0} />
+            <MenuItem key={item.href} href={item.href} icon={item.icon} text={item.text} badge={'badge' in item ? Number(item.badge || 0) : 0} />
           ))}
 
           <button
@@ -743,11 +614,11 @@ export default function AppShell({
           <div className="mt-6 rounded-2xl border border-zinc-200 bg-white px-4 py-4 shadow-sm">
             <p className="text-sm font-black text-zinc-950">{APP_NAME}</p>
             <p className="mt-1 text-xs font-bold text-zinc-500">Version {APP_VERSION}</p>
-            <p className="mt-1 text-xs font-bold text-emerald-700">Plan {hubConfig.plan}</p>
+            <p className="mt-1 text-xs font-bold text-castelnova-700">Plan {hubConfig.plan}</p>
             <button
               type="button"
               onClick={loadHubConfig}
-              className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-bold text-zinc-700 hover:bg-emerald-50 hover:text-emerald-700"
+              className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-bold text-zinc-700 hover:bg-castelnova-50 hover:text-castelnova-700"
             >
               <RefreshCw size={14} />
               Actualizar configuracion del Hub
@@ -805,12 +676,12 @@ function HubBlockedScreen({ title, message }: { title: string; message: string }
       <div className="mt-6 flex flex-wrap justify-center gap-3">
         <Link
           href="/configuracion"
-          className="rounded-xl bg-emerald-600 px-5 py-3 font-bold text-white hover:bg-emerald-700"
+          className="rounded-xl bg-castelnova-500 px-5 py-3 font-bold text-white hover:bg-castelnova-700"
         >
           Ir a configuracion
         </Link>
         <a
-          href="https://wa.me/18096361020"
+          href="https://wa.me/18494572425"
           target="_blank"
           rel="noreferrer"
           className="rounded-xl border border-zinc-300 bg-white px-5 py-3 font-bold text-zinc-700 hover:bg-zinc-50"
@@ -841,8 +712,8 @@ function MenuItem({
       href={href}
       className={`flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium ${
         active
-          ? 'bg-emerald-50 text-emerald-700'
-          : 'text-zinc-600 hover:bg-emerald-50 hover:text-emerald-700'
+          ? 'bg-castelnova-50 text-castelnova-700'
+          : 'text-zinc-600 hover:bg-castelnova-50 hover:text-castelnova-700'
       }`}
     >
       {icon}
@@ -851,8 +722,6 @@ function MenuItem({
     </Link>
   )
 }
-
-
 
 
 

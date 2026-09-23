@@ -1,10 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
-import { getCurrentStoreId } from '@/lib/store-context'
-import { uploadProductImageOrFallback } from '@/lib/image-upload'
 import { ImageIcon, Star, Trash2, Upload } from 'lucide-react'
+import { resolveProductImageUrl } from '@/lib/product-images'
 
 type ProductImage = {
   id: string
@@ -16,7 +14,6 @@ type ProductImage = {
 
 export default function ProductGallery({ productId }: { productId: string }) {
   const [images, setImages] = useState<ProductImage[]>([])
-  const [storeId, setStoreId] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
 
   useEffect(() => {
@@ -24,29 +21,22 @@ export default function ProductGallery({ productId }: { productId: string }) {
   }, [productId])
 
   async function loadImages() {
-    const currentStoreId = await getCurrentStoreId()
-    setStoreId(currentStoreId)
+    const response = await fetch(`/api/products/${encodeURIComponent(productId)}/images`)
+    const payload: unknown = await response.json().catch(() => null)
 
-    if (!currentStoreId) return
-
-    const { data, error } = await supabase
-      .from('product_images')
-      .select('id, product_id, image_url, is_primary, sort_order')
-      .eq('store_id', currentStoreId)
-      .eq('product_id', productId)
-      .order('sort_order')
-
-    if (error) {
-      alert('Error cargando imágenes: ' + error.message)
+    if (!response.ok) {
+      const message = payload && typeof payload === 'object' && 'error' in payload
+        ? String(payload.error)
+        : 'No se pudieron cargar las imágenes.'
+      alert('Error cargando imágenes: ' + message)
       return
     }
 
-    setImages(data || [])
+    setImages(Array.isArray(payload) ? payload as ProductImage[] : [])
   }
 
   async function uploadImages(files: FileList | File[]) {
     if (!productId) return
-    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
 
     setUploading(true)
 
@@ -58,32 +48,26 @@ export default function ProductGallery({ productId }: { productId: string }) {
 
       if (!file.type.startsWith('image/')) continue
 
-      const fileExt = file.name.split('.').pop()
-      const fileName = `${productId}-${Date.now()}-${Math.random()
-        .toString(36)
-        .substring(2)}.${fileExt}`
-
-      let imageUrl = ''
-
       try {
-        imageUrl = await uploadProductImageOrFallback(file, fileName)
+        const isFirstImage = currentCount === 0 && index === 0
+        const formData = new FormData()
+        formData.append('file', file)
+        formData.append('isPrimary', String(isFirstImage))
+        formData.append('sortOrder', String(currentCount + index + 1))
+
+        const response = await fetch(`/api/products/${encodeURIComponent(productId)}/images/upload`, {
+          method: 'POST',
+          body: formData,
+        })
+        const payload: unknown = await response.json().catch(() => null)
+        if (!response.ok) {
+          const message = payload && typeof payload === 'object' && 'error' in payload
+            ? String(payload.error)
+            : 'No se pudo subir la imagen.'
+          throw new Error(message)
+        }
       } catch (error) {
         alert('Error subiendo imagen: ' + (error instanceof Error ? error.message : 'Error desconocido'))
-        continue
-      }
-
-      const isFirstImage = currentCount === 0 && index === 0
-
-      const { error: insertError } = await supabase.from('product_images').insert({
-        store_id: storeId,
-        product_id: productId,
-        image_url: imageUrl,
-        is_primary: isFirstImage,
-        sort_order: currentCount + index + 1,
-      })
-
-      if (insertError) {
-        alert('Imagen subida, pero no se guardó en galería: ' + insertError.message)
       }
     }
 
@@ -92,20 +76,21 @@ export default function ProductGallery({ productId }: { productId: string }) {
   }
 
   async function setPrimary(imageId: string) {
-    await supabase
-      .from('product_images')
-      .update({ is_primary: false })
-      .eq('store_id', storeId)
-      .eq('product_id', productId)
+    const response = await fetch(
+      `/api/products/${encodeURIComponent(productId)}/images/${encodeURIComponent(imageId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isPrimary: true }),
+      }
+    )
+    const payload: unknown = await response.json().catch(() => null)
 
-    const { error } = await supabase
-      .from('product_images')
-      .update({ is_primary: true })
-      .eq('store_id', storeId)
-      .eq('id', imageId)
-
-    if (error) {
-      alert('Error marcando imagen principal: ' + error.message)
+    if (!response.ok) {
+      const message = payload && typeof payload === 'object' && 'error' in payload
+        ? String(payload.error)
+        : 'No se pudo marcar la imagen principal.'
+      alert('Error marcando imagen principal: ' + message)
       return
     }
 
@@ -115,14 +100,17 @@ export default function ProductGallery({ productId }: { productId: string }) {
   async function deleteImage(image: ProductImage) {
     if (!confirm('¿Eliminar esta imagen?')) return
 
-    const { error } = await supabase
-      .from('product_images')
-      .delete()
-      .eq('store_id', storeId)
-      .eq('id', image.id)
+    const response = await fetch(
+      `/api/products/${encodeURIComponent(productId)}/images/${encodeURIComponent(image.id)}`,
+      { method: 'DELETE' }
+    )
+    const payload: unknown = await response.json().catch(() => null)
 
-    if (error) {
-      alert('Error eliminando imagen: ' + error.message)
+    if (!response.ok) {
+      const message = payload && typeof payload === 'object' && 'error' in payload
+        ? String(payload.error)
+        : 'No se pudo eliminar la imagen.'
+      alert('Error eliminando imagen: ' + message)
       return
     }
 
@@ -143,7 +131,7 @@ export default function ProductGallery({ productId }: { productId: string }) {
           <div className="flex h-64 items-center justify-center rounded-2xl border border-zinc-200 bg-zinc-50">
             {primaryImage ? (
               <img
-                src={primaryImage.image_url}
+                src={resolveProductImageUrl(primaryImage) || ''}
                 alt="Imagen principal"
                 className="h-full w-full object-contain p-4"
               />
@@ -207,7 +195,7 @@ export default function ProductGallery({ productId }: { productId: string }) {
               >
                 <div className="flex h-28 items-center justify-center bg-zinc-50">
                   <img
-                    src={image.image_url}
+                    src={resolveProductImageUrl(image) || ''}
                     alt="Producto"
                     className="h-full w-full object-contain p-2"
                   />

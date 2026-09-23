@@ -2,15 +2,12 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
-import { supabase } from '@/lib/supabase'
-import { getCurrentStoreId } from '@/lib/store-context'
 import { formatMoney, formatDate } from '@/lib/format'
 import ExportModal from '@/components/export/ExportModal'
 import { exportReports as exportReportsFile } from '@/lib/export/reports-export'
 import type { ExportFormat } from '@/lib/export/export-types'
 import {
   BarChart3,
-  DollarSign,
   Package,
   ShoppingCart,
   TrendingUp,
@@ -28,7 +25,6 @@ type Sale = {
   created_at: string
   card_fee: number
   shipping_cost: number
-  cooperative_commission_amount: number
 }
 
 type SaleItem = {
@@ -62,6 +58,8 @@ type Payment = {
   payment_date: string
 }
 
+type ReportPeriod = 'day' | 'month' | 'year' | 'custom'
+
 export default function ReportesPage() {
   const [sales, setSales] = useState<Sale[]>([])
   const [saleItems, setSaleItems] = useState<SaleItem[]>([])
@@ -70,69 +68,48 @@ export default function ReportesPage() {
   const [payments, setPayments] = useState<Payment[]>([])
   const [loading, setLoading] = useState(true)
 
-  const [period, setPeriod] = useState<'day' | 'month' | 'year' | 'custom'>('month')
+  const [period, setPeriod] = useState<ReportPeriod>('month')
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
   const [exportModalOpen, setExportModalOpen] = useState(false)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('excel')
 
-  useEffect(() => {
-    loadReports()
-  }, [])
-
   async function loadReports() {
     setLoading(true)
+    try {
+      const response = await fetch('/api/reports')
+      const payload: unknown = await response.json().catch(() => null)
 
-    const storeId = await getCurrentStoreId()
+      if (!response.ok || !payload || typeof payload !== 'object') {
+        const message = payload && typeof payload === 'object' && 'error' in payload
+          ? String(payload.error)
+          : 'No se pudieron cargar los reportes.'
+        alert(message)
+        return
+      }
 
-    if (!storeId) {
+      const data = payload as {
+        sales?: Sale[]
+        saleItems?: SaleItem[]
+        products?: Product[]
+        purchases?: Purchase[]
+        payments?: Payment[]
+      }
+      setSales(Array.isArray(data.sales) ? data.sales : [])
+      setSaleItems(Array.isArray(data.saleItems) ? data.saleItems : [])
+      setProducts(Array.isArray(data.products) ? data.products : [])
+      setPurchases(Array.isArray(data.purchases) ? data.purchases : [])
+      setPayments(Array.isArray(data.payments) ? data.payments : [])
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'No se pudieron cargar los reportes.')
+    } finally {
       setLoading(false)
-      return alert('Este usuario no tiene una tienda asignada.')
     }
-
-    const { data: salesData } = await supabase
-      .from('sales')
-      .select('id, total, status, sale_channel, created_at, card_fee, shipping_cost, cooperative_commission_amount')
-      .eq('store_id', storeId)
-      .order('created_at', { ascending: false })
-
-    const saleIds = (salesData || []).map((sale) => sale.id)
-
-    let saleItemsData: SaleItem[] = []
-
-    if (saleIds.length) {
-      const { data } = await supabase
-        .from('sale_items')
-        .select('sale_id, product_name, quantity, cost, total')
-        .in('sale_id', saleIds)
-
-      saleItemsData = data || []
-    }
-
-    const { data: productsData } = await supabase
-      .from('products')
-      .select('id, name, stock, cost, sale_price, category, active')
-      .eq('store_id', storeId)
-
-    const { data: purchasesData } = await supabase
-      .from('purchases')
-      .select('id, total, created_at, supplier_name')
-      .eq('store_id', storeId)
-      .order('created_at', { ascending: false })
-
-    const { data: paymentsData } = await supabase
-      .from('payments')
-      .select('id, amount, payment_date')
-      .eq('store_id', storeId)
-      .order('payment_date', { ascending: false })
-
-    setSales(salesData || [])
-    setSaleItems(saleItemsData)
-    setProducts(productsData || [])
-    setPurchases(purchasesData || [])
-    setPayments(paymentsData || [])
-    setLoading(false)
   }
+
+  useEffect(() => {
+    void Promise.resolve().then(loadReports)
+  }, [])
 
   function getRange() {
     const now = new Date()
@@ -270,7 +247,6 @@ export default function ReportesPage() {
         payments: totalPayments,
         pendingReceivable: filteredSales.filter((sale) => sale.status === 'pending').reduce((sum, sale) => sum + Number(sale.total || 0), 0),
         cardFee: filteredSales.reduce((sum, sale) => sum + Number(sale.card_fee || 0), 0),
-        cooperativeFee: filteredSales.reduce((sum, sale) => sum + Number(sale.cooperative_commission_amount || 0), 0),
         shipping: filteredSales.reduce((sum, sale) => sum + Number(sale.shipping_cost || 0), 0),
         activeProducts: activeProducts.length,
         lowStock: lowStockProducts.length,
@@ -301,7 +277,12 @@ export default function ReportesPage() {
       <div className="mb-6 flex flex-wrap items-center gap-3">
         <select
           value={period}
-          onChange={(e) => setPeriod(e.target.value as any)}
+          onChange={(e) => {
+            const nextPeriod = e.target.value
+            if (nextPeriod === 'day' || nextPeriod === 'month' || nextPeriod === 'year' || nextPeriod === 'custom') {
+              setPeriod(nextPeriod)
+            }
+          }}
           className="rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
         >
           <option value="day">Hoy</option>
@@ -562,6 +543,3 @@ function ReportCard({
     </div>
   )
 }
-
-
-

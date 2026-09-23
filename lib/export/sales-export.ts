@@ -15,7 +15,6 @@ type SalesExportRow = {
   cost: number
   profit: number
   cardFee: number
-  cooperativeFee: number
   shipping: number
 }
 
@@ -45,7 +44,6 @@ function normalizeStatus(status: string) {
 
 function normalizeChannel(channel: string) {
   const value = channel.toLowerCase()
-  if (value.includes('coop')) return 'cooperative'
   if (value.includes('cot') || value.includes('quote')) return 'quotation'
   return 'pos'
 }
@@ -59,7 +57,7 @@ export async function exportSales(params: SalesExportParams) {
   const period = periodLabel(params)
   const document = {
     title: 'Ventas',
-    filename: `ventas-guatapo-${safeFilename(period)}.${params.format === 'excel' ? 'xlsx' : 'pdf'}`,
+    filename: `ventas-shopdesk-${safeFilename(period)}.${params.format === 'excel' ? 'xlsx' : 'pdf'}`,
     period,
     filters: [
       params.channel === 'all' ? 'Canal: Todos' : `Canal: ${params.channel}`,
@@ -72,7 +70,6 @@ export async function exportSales(params: SalesExportParams) {
       { label: 'Items vendidos', value: filtered.reduce((sum, row) => sum + row.itemCount, 0), type: 'number' as const },
       { label: 'Beneficio neto', value: filtered.reduce((sum, row) => sum + row.profit, 0), type: 'money' as const },
       { label: 'Comision de tarjeta', value: filtered.reduce((sum, row) => sum + row.cardFee, 0), type: 'money' as const },
-      { label: 'Comision de cooperativas', value: filtered.reduce((sum, row) => sum + row.cooperativeFee, 0), type: 'money' as const },
       { label: 'Envios', value: filtered.reduce((sum, row) => sum + row.shipping, 0), type: 'money' as const },
     ],
     columns: [
@@ -87,7 +84,6 @@ export async function exportSales(params: SalesExportParams) {
       { key: 'cost', header: 'Costo', type: 'money' as const, width: 14 },
       { key: 'profit', header: 'Beneficio', type: 'money' as const, width: 14 },
       { key: 'cardFee', header: 'Comision tarjeta', type: 'money' as const, width: 16 },
-      { key: 'cooperativeFee', header: 'Comision cooperativa', type: 'money' as const, width: 18 },
       { key: 'shipping', header: 'Envio', type: 'money' as const, width: 12 },
     ],
     rows: filtered,

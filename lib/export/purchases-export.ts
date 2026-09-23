@@ -30,7 +30,7 @@ export type PurchaseExportRow = {
 export async function exportPurchases(params: { rows: PurchaseExportRow[]; format: ExportFormat }) {
   const document = {
     title: 'Compras',
-    filename: `compras-guatapo-${todayIsoDate()}.${params.format === 'excel' ? 'xlsx' : 'pdf'}`,
+    filename: `compras-shopdesk-${todayIsoDate()}.${params.format === 'excel' ? 'xlsx' : 'pdf'}`,
     filters: ['Compras registradas'],
     orientation: 'landscape' as const,
     summary: [

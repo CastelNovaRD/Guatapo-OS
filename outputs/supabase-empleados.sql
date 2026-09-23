@@ -1,5 +1,5 @@
 ﻿-- Modulo de empleados / recursos humanos por tienda
--- Ejecutar en Supabase SQL Editor del proyecto de Guatapo OS.
+-- Ejecutar en Supabase SQL Editor del proyecto de ShopDesk OS.
 
 create extension if not exists pgcrypto;
 

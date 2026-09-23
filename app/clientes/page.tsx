@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
-import { supabase } from '@/lib/supabase'
 import { Download, Edit, Plus, Search, Trash2, Upload, Users, X } from 'lucide-react'
 import { formatDate, formatMoney } from '@/lib/format'
 import { getCurrentStoreId } from '@/lib/store-context'
@@ -18,6 +17,15 @@ type Customer = {
   full_name: string
   phone: string | null
   cedula: string | null
+  created_at: string
+}
+
+type CustomerApi = {
+  id: string
+  full_name: string
+  document: string | null
+  phone: string | null
+  active: boolean
   created_at: string
 }
 
@@ -46,8 +54,6 @@ type Sale = {
   customer_id: string | null
   total: number
   created_at: string
-  sale_channel: string | null
-  cooperative_name: string | null
   fiscal_customer_rnc: string | null
 }
 
@@ -84,7 +90,7 @@ export default function ClientesPage() {
   const [storeId, setStoreId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [typeFilter, setTypeFilter] = useState<'all' | 'customer' | 'fiscal' | 'partner'>('all')
+  const [typeFilter, setTypeFilter] = useState<'all' | 'customer' | 'fiscal'>('all')
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage, setItemsPerPage] = useState(20)
   const [exportModalOpen, setExportModalOpen] = useState(false)
@@ -116,31 +122,20 @@ export default function ClientesPage() {
       return alert('Este usuario no tiene una tienda asignada.')
     }
 
-    const { data: customersData, error: customersError } = await supabase
-      .from('customers')
-      .select('id, full_name, phone, cedula, created_at')
-      .eq('store_id', currentStoreId)
-      .order('created_at', { ascending: false })
-
-    const { data: salesData, error: salesError } = await supabase
-      .from('sales')
-      .select('id, customer_id, total, created_at, sale_channel, cooperative_name, fiscal_customer_rnc')
-      .eq('store_id', currentStoreId)
-      .order('created_at', { ascending: false })
-
-    const { data: quoteCustomersData, error: quoteCustomersError } = await supabase
-      .from('quote_customers')
-      .select('id, company_name, rnc, phone, address, created_at')
-      .eq('store_id', currentStoreId)
-      .order('created_at', { ascending: false })
-
-    if (customersError) alert('Error cargando clientes: ' + customersError.message)
-    if (salesError) alert('Error cargando ventas: ' + salesError.message)
-    if (quoteCustomersError) alert('Error cargando clientes fiscales: ' + quoteCustomersError.message)
-
-    setCustomers(customersData || [])
-    setQuoteCustomers(quoteCustomersData || [])
-    setSales(salesData || [])
+    const response = await fetch('/api/customers')
+    const payload = await response.json() as CustomerApi[] | { error?: string }
+    if (!response.ok) alert('Error cargando clientes: ' + ('error' in payload ? payload.error : 'Error desconocido'))
+    setCustomers(Array.isArray(payload)
+      ? payload.map((customer) => ({
+          id: customer.id,
+          full_name: customer.full_name,
+          phone: customer.phone,
+          cedula: customer.document,
+          created_at: customer.created_at,
+        }))
+      : [])
+    setQuoteCustomers([])
+    setSales([])
     setLoading(false)
   }
 
@@ -182,8 +177,7 @@ export default function ClientesPage() {
       const matchesType =
         typeFilter === 'all' ||
         (typeFilter === 'customer' && kind === 'Cliente') ||
-        (typeFilter === 'fiscal' && kind === 'Cliente fiscal') ||
-        (typeFilter === 'partner' && kind === 'Socio')
+        (typeFilter === 'fiscal' && kind === 'Cliente fiscal')
 
       return matchesSearch && matchesType
     })
@@ -202,7 +196,7 @@ export default function ClientesPage() {
         name: customer.full_name,
         phone: customer.phone || '',
         document: customer.cedula || '',
-        type: getCustomerKind(customer).label as 'Cliente' | 'Cliente fiscal' | 'Socio',
+        type: getCustomerKind(customer).label as 'Cliente' | 'Cliente fiscal',
         purchases: customerSales.length,
         totalPurchased: customerSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0),
         lastPurchase: lastSale?.created_at || '',
@@ -269,24 +263,6 @@ export default function ClientesPage() {
       }
     }
 
-    const normalizedName = customer.full_name.trim().toLowerCase()
-
-    const isPartner = sales.some((sale) => {
-      const cooperativeName = sale.cooperative_name?.trim().toLowerCase()
-
-      return (
-        (sale.customer_id === customer.id && sale.sale_channel === 'cooperative') ||
-        (Boolean(cooperativeName) && cooperativeName === normalizedName)
-      )
-    })
-
-    if (isPartner) {
-      return {
-        label: 'Socio',
-        className: 'bg-red-50 text-red-700 ring-red-200',
-      }
-    }
-
     return {
       label: 'Cliente',
       className: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
@@ -319,14 +295,8 @@ async function deleteCustomer(customer: Customer) {
 
   if (!confirm(`¿Seguro que quieres eliminar a "${customer.full_name}"?`)) return
 
-  const { error } = await supabase
-    .from('customers')
-    .delete()
-    .eq('id', customer.id)
-
-  if (error) {
-    return alert('Error eliminando cliente: ' + error.message)
-  }
+  const response = await fetch(`/api/customers/${customer.id}`, { method: 'DELETE' })
+  if (!response.ok) return alert('Error eliminando cliente: ' + ((await response.json() as { error?: string }).error || 'Error desconocido'))
 
   loadData()
 }
@@ -372,29 +342,25 @@ if (duplicateCustomer) {
   )
 }
 
-    const payload = {
-      full_name: form.full_name.trim(),
-      store_id: storeId,
+    const customerFields = {
+      fullName: form.full_name.trim(),
+      document: form.cedula.trim() || null,
+      documentType: form.cedula.trim() ? 'cedula' : null,
       phone: form.phone.trim() || null,
-      cedula: form.cedula.trim() || null,
     }
+    const payload = editingCustomer ? customerFields : { ...customerFields, active: true }
 
     if (editingCustomer) {
-      const { error } = await supabase
-        .from('customers')
-        .update(payload)
-        .eq('id', editingCustomer.id)
-
-      if (error) {
+      const response = await fetch(`/api/customers/${editingCustomer.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+      if (!response.ok) {
         setSaving(false)
-        return alert('Error actualizando cliente: ' + error.message)
+        return alert('Error actualizando cliente: ' + ((await response.json() as { error?: string }).error || 'Error desconocido'))
       }
     } else {
-      const { error } = await supabase.from('customers').insert(payload)
-
-      if (error) {
+      const response = await fetch('/api/customers', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+      if (!response.ok) {
         setSaving(false)
-        return alert('Error creando cliente: ' + error.message)
+        return alert('Error creando cliente: ' + ((await response.json() as { error?: string }).error || 'Error desconocido'))
       }
     }
 
@@ -410,7 +376,7 @@ if (duplicateCustomer) {
       <div className="mb-8 flex items-start justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-3 text-3xl font-bold">
-            <Users className="text-emerald-500" />
+            <Users className="text-castelnova-600" />
             Clientes
           </h1>
           <p className="text-zinc-500">
@@ -420,7 +386,7 @@ if (duplicateCustomer) {
 
         <button
           onClick={openNewCustomer}
-          className="flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 font-semibold text-white hover:bg-emerald-600"
+          className="flex items-center gap-2 rounded-xl bg-castelnova-600 px-5 py-3 font-semibold text-white hover:bg-castelnova-700"
         >
           <Plus size={18} />
           Nuevo Cliente
@@ -429,7 +395,7 @@ if (duplicateCustomer) {
 
       <div className="mb-6 grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_auto_auto]">
         <div className="flex items-center gap-3 rounded-2xl border border-zinc-200 bg-white px-4 py-3 shadow-sm">
-        <Search className="text-emerald-500" size={20} />
+        <Search className="text-castelnova-600" size={20} />
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -440,12 +406,11 @@ if (duplicateCustomer) {
         <select
           value={typeFilter}
           onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)}
-          className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 shadow-sm outline-none focus:border-emerald-500"
+          className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 shadow-sm outline-none focus:border-castelnova-600"
         >
           <option value="all">Todos los clientes</option>
           <option value="customer">Clientes</option>
           <option value="fiscal">Clientes fiscales</option>
-          <option value="partner">Socios</option>
         </select>
         <button
           type="button"
@@ -458,7 +423,7 @@ if (duplicateCustomer) {
         <button
           type="button"
           onClick={() => setImportModalOpen(true)}
-          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 font-bold text-emerald-700 shadow-sm hover:bg-emerald-100"
+          className="inline-flex items-center justify-center gap-2 rounded-2xl border border-castelnova-200 bg-castelnova-50 px-5 py-3 font-bold text-castelnova-700 shadow-sm hover:bg-castelnova-100"
         >
           <Upload size={18} />
           Importación
@@ -478,7 +443,7 @@ if (duplicateCustomer) {
             <select
               value={itemsPerPage}
               onChange={(e) => setItemsPerPage(Number(e.target.value))}
-              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-zinc-950 outline-none focus:border-emerald-500"
+              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-zinc-950 outline-none focus:border-castelnova-600"
             >
               {[10, 20, 50, 100].map((size) => (
                 <option key={size} value={size}>{size}</option>
@@ -553,7 +518,7 @@ if (duplicateCustomer) {
                 <div className="flex justify-end gap-2">
                   <button
                     onClick={() => openEditCustomer(customer.originalCustomer!)}
-                    className="rounded-lg border border-zinc-200 p-2 text-zinc-600 hover:border-emerald-500 hover:text-emerald-600"
+                    className="rounded-lg border border-zinc-200 p-2 text-zinc-600 hover:border-castelnova-600 hover:text-castelnova-600"
                     title="Editar cliente"
                   >
                     <Edit size={17} />
@@ -656,7 +621,7 @@ if (duplicateCustomer) {
                 <button
                   type="submit"
                   disabled={saving}
-                  className="rounded-xl bg-emerald-500 px-5 py-3 font-semibold text-white hover:bg-emerald-600 disabled:opacity-50"
+                  className="rounded-xl bg-castelnova-600 px-5 py-3 font-semibold text-white hover:bg-castelnova-700 disabled:opacity-50"
                 >
                   {saving
                     ? 'Guardando...'
@@ -673,7 +638,7 @@ if (duplicateCustomer) {
       <ImportModal
         open={importModalOpen}
         title="Importación de clientes"
-        templateName="clientes-guatapo"
+        templateName="clientes-shopdesk"
         preview={importPreview}
         loading={importLoading}
         committing={importCommitting}
@@ -698,12 +663,11 @@ if (duplicateCustomer) {
       >
         <label className="block">
           <span className="mb-1 block text-sm font-bold text-zinc-700">Tipo de cliente</span>
-          <select value={exportScope} onChange={(e) => setExportScope(e.target.value as CustomerExportScope)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500">
+          <select value={exportScope} onChange={(e) => setExportScope(e.target.value as CustomerExportScope)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600">
             <option value="all">Todos</option>
             <option value="customer">Clientes normales</option>
             <option value="fiscal">Clientes fiscales</option>
-            <option value="partner">Socios</option>
-          </select>
+            </select>
         </label>
       </ExportModal>
     </AppShell>
@@ -750,10 +714,11 @@ function Input({
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
+        className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600"
       />
     </div>
   )
 }
+
 
 

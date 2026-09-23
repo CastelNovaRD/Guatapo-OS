@@ -2,15 +2,14 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import AppShell from '@/components/AppShell'
-import { supabase } from '@/lib/supabase'
 import { getCurrentStoreId } from '@/lib/store-context'
 import { DEFAULT_WEB_SETTINGS, WebBenefit, WebPromotion, WebScheduleGroup, WebSettings, formatScheduleRange, getScheduleRows, normalizeWebSettings, readLocalWebSettings, saveLocalWebSettings } from '@/lib/web-settings'
 import { WEB_CATEGORY_ICON_OPTIONS, renderWebCategoryIcon } from '@/components/web/WebStoreLayout'
-import { BadgePercent, CheckCircle, Code2, Eye, Globe, GripVertical, ImageIcon, LayoutTemplate, LinkIcon, Megaphone, Monitor, Package, Palette, Plus, Save, Search, Settings, Share2, ShieldCheck, ShoppingBag, Smartphone, Sparkles, Tablet, Tags, Trash2, Upload } from 'lucide-react'
+import { BadgePercent, CheckCircle, Code2, Eye, Globe, GripVertical, ImageIcon, LayoutTemplate, LinkIcon, Megaphone, Monitor, Package, Palette, Plus, Save, Search, Settings, Share2, ShieldCheck, Smartphone, Sparkles, Tablet, Tags, Trash2, Upload } from 'lucide-react'
 
 type StoreRow = { id: string; name: string; slug: string | null; phone: string | null; whatsapp: string | null }
 type StoreCategory = { id: string; name: string }
-type ProductStats = { total: number; visibleNormal: number; visibleCoop: number; featured: number; discounted: number }
+type ProductStats = { total: number; visibleNormal: number; featured: number; discounted: number }
 type TabId = 'general' | 'appearance' | 'hero' | 'promotions' | 'products' | 'categories' | 'benefits' | 'social' | 'colors' | 'seo' | 'advanced'
 type PreviewMode = 'desktop' | 'tablet' | 'mobile'
 
@@ -39,11 +38,11 @@ export default function WebSettingsPage() {
   const [store, setStore] = useState<StoreRow | null>(null)
   const [storeCategories, setStoreCategories] = useState<StoreCategory[]>([])
   const [settings, setSettings] = useState<WebSettings>(DEFAULT_WEB_SETTINGS)
-  const [stats, setStats] = useState<ProductStats>({ total: 0, visibleNormal: 0, visibleCoop: 0, featured: 0, discounted: 0 })
+  const [stats, setStats] = useState<ProductStats>({ total: 0, visibleNormal: 0, featured: 0, discounted: 0 })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [saveMode, setSaveMode] = useState<'local' | 'supabase'>('local')
+  const [saveMode, setSaveMode] = useState<'local' | 'postgresql'>('local')
   const [activeTab, setActiveTab] = useState<TabId>('general')
   const [previewMode, setPreviewMode] = useState<PreviewMode>('desktop')
   const [baseUrl, setBaseUrl] = useState('')
@@ -52,41 +51,130 @@ export default function WebSettingsPage() {
   useEffect(() => { setBaseUrl(window.location.origin); void Promise.resolve().then(loadSettings) }, [])
 
   const publicUrl = `${baseUrl}/web`
-  const coopUrl = `${baseUrl}/web/cooperativa`
   const orderedStoreCategories = orderCategoryList(storeCategories, settings.categoryOrder || [])
 
-  async function loadSettings() {
-    setLoading(true)
+ async function loadSettings() {
+  setLoading(true)
+
+  try {
     const storeId = await getCurrentStoreId()
-    if (!storeId) { setLoading(false); return alert('Este usuario no tiene una tienda asignada.') }
-    const { data: storeData } = await supabase.from('stores').select('id, name, slug, phone, whatsapp').eq('id', storeId).maybeSingle()
-    const { data: categoriesData } = await supabase.from('categories').select('id, name').eq('store_id', storeId).eq('active', true).order('name')
-    if (storeData) setStore(storeData)
-    setStoreCategories(categoriesData || [])
+
+    if (!storeId) {
+      alert('Este usuario no tiene una tienda asignada.')
+      return
+    }
+
+    const [storeResponse, categoriesResponse, webSettingsResponse] =
+      await Promise.all([
+        fetch('/api/store-settings', { cache: 'no-store' }),
+        fetch('/api/categories', { cache: 'no-store' }),
+        fetch('/api/store-settings/web', { cache: 'no-store' }),
+      ])
+
+    if (!storeResponse.ok) {
+      throw new Error('No se pudo cargar la configuración de la tienda.')
+    }
+
+    const storeData = await storeResponse.json()
+
+    const categoriesData = categoriesResponse.ok
+      ? await categoriesResponse.json()
+      : []
+
+    const webSettingsData = webSettingsResponse.ok
+      ? await webSettingsResponse.json()
+      : null
+
+    setStore(storeData)
+
+    setStoreCategories(
+      Array.isArray(categoriesData)
+        ? categoriesData
+        : Array.isArray(categoriesData?.items)
+          ? categoriesData.items
+          : []
+    )
+
     let nextSettings = readLocalWebSettings(storeId)
-    const storeWithWebSettings = await supabase.from('stores').select('web_settings').eq('id', storeId).maybeSingle()
-    if (!storeWithWebSettings.error && storeWithWebSettings.data?.web_settings) {
-      nextSettings = normalizeWebSettings(storeWithWebSettings.data.web_settings as Partial<WebSettings>)
-      setSaveMode('supabase')
+
+    if (webSettingsData && typeof webSettingsData === 'object') {
+      nextSettings = normalizeWebSettings(
+        webSettingsData as Partial<WebSettings>
+      )
+
+      setSaveMode('postgresql')
       saveLocalWebSettings(storeId, nextSettings)
     }
-    if (storeData) nextSettings = normalizeWebSettings({ ...nextSettings, contactPhone: nextSettings.contactPhone || storeData.phone || DEFAULT_WEB_SETTINGS.contactPhone, whatsapp: nextSettings.whatsapp || storeData.whatsapp || DEFAULT_WEB_SETTINGS.whatsapp })
+
+    nextSettings = normalizeWebSettings({
+      ...nextSettings,
+      contactPhone:
+        nextSettings.contactPhone ||
+        storeData.phone ||
+        DEFAULT_WEB_SETTINGS.contactPhone,
+      whatsapp:
+        nextSettings.whatsapp ||
+        storeData.whatsapp ||
+        DEFAULT_WEB_SETTINGS.whatsapp,
+    })
+
     setSettings(nextSettings)
-    await loadProductStats(storeId)
+
+    await loadProductStats()
+  } catch (error) {
+    console.error(error)
+    alert(
+      error instanceof Error
+        ? error.message
+        : 'No se pudo cargar la configuración web.'
+    )
+  } finally {
     setLoading(false)
   }
+}
 
-  async function loadProductStats(storeId: string) {
-    const { data } = await supabase.from('products').select('show_on_website, web_visibility, featured, specs').eq('store_id', storeId).eq('active', true)
-    const rows = data || []
+async function loadProductStats() {
+  try {
+    const response = await fetch('/api/products?active=true', {
+      cache: 'no-store',
+    })
+
+    if (!response.ok) {
+      throw new Error('No se pudieron cargar los productos.')
+    }
+
+    const result = await response.json()
+
+    const rows = Array.isArray(result)
+      ? result
+      : Array.isArray(result?.items)
+        ? result.items
+        : []
+
     setStats({
       total: rows.length,
-      visibleNormal: rows.filter((product: any) => product.show_on_website !== false && ['normal', 'both'].includes(product.web_visibility)).length,
-      visibleCoop: rows.filter((product: any) => ['coop', 'both'].includes(product.web_visibility)).length,
+      visibleNormal: rows.filter(
+        (product: any) =>
+          product.show_on_website !== false &&
+          ['normal', 'both'].includes(product.web_visibility)
+      ).length,
       featured: rows.filter((product: any) => product.featured).length,
-      discounted: rows.filter((product: any) => Number(product.specs?.web_discount_percent || 0) > 0).length,
+      discounted: rows.filter(
+        (product: any) =>
+          Number(product.specs?.web_discount_percent || 0) > 0
+      ).length,
+    })
+  } catch (error) {
+    console.error(error)
+
+    setStats({
+      total: 0,
+      visibleNormal: 0,
+      featured: 0,
+      discounted: 0,
     })
   }
+}
 
   function update<K extends keyof WebSettings>(field: K, value: WebSettings[K]) { setSettings((current) => normalizeWebSettings({ ...current, [field]: value })); setSaved(false) }
   function updatePromotion(id: string, patch: Partial<WebPromotion>) { update('promotions', settings.promotions.map((item) => item.id === id ? { ...item, ...patch } : item)) }
@@ -112,18 +200,65 @@ export default function WebSettingsPage() {
   }
 
   async function saveSettings(mode: 'draft' | 'publish') {
-    const storeId = store?.id || (await getCurrentStoreId())
-    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
-    const now = new Date().toISOString()
-    const nextSettings = normalizeWebSettings({ ...settings, draftUpdatedAt: now, publishedAt: mode === 'publish' ? now : settings.publishedAt })
-    setSaving(true)
+  const storeId = store?.id || (await getCurrentStoreId())
+
+  if (!storeId) {
+    return alert('Este usuario no tiene una tienda asignada.')
+  }
+
+  const now = new Date().toISOString()
+
+  const nextSettings = normalizeWebSettings({
+    ...settings,
+    draftUpdatedAt: now,
+    publishedAt:
+      mode === 'publish'
+        ? now
+        : settings.publishedAt,
+  })
+
+  setSaving(true)
+  setSaved(false)
+
+  try {
+    const response = await fetch('/api/store-settings/web', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(nextSettings),
+    })
+
+    if (!response.ok) {
+      const result = await response.json().catch(() => null)
+
+      throw new Error(
+        result?.error ||
+          'No se pudo guardar la configuración web.'
+      )
+    }
+
     setSettings(nextSettings)
     saveLocalWebSettings(storeId, nextSettings)
-    const { error } = await supabase.from('stores').update({ web_settings: nextSettings } as any).eq('id', storeId)
-    setSaveMode(error ? 'local' : 'supabase')
-    setSaving(false)
+    setSaveMode('postgresql')
     setSaved(true)
+  } catch (error) {
+    console.error(error)
+
+    // Conservamos una copia local como respaldo,
+    // pero no fingimos que PostgreSQL guardó correctamente.
+    saveLocalWebSettings(storeId, nextSettings)
+    setSaveMode('local')
+
+    alert(
+      error instanceof Error
+        ? error.message
+        : 'No se pudo guardar la configuración web.'
+    )
+  } finally {
+    setSaving(false)
   }
+}
 
   function resetSettings() { if (confirm('Quieres restaurar la configuracion visual por defecto de la tienda web?')) { setSettings(DEFAULT_WEB_SETTINGS); setSaved(false) } }
   function openPreview() { window.open(publicUrl || '/web', '_blank', 'noopener,noreferrer') }
@@ -138,7 +273,7 @@ export default function WebSettingsPage() {
             <p className="text-sm font-black uppercase tracking-[0.24em] text-emerald-600">Constructor visual</p>
             <h1 className="mt-1 flex items-center gap-3 text-3xl font-black text-zinc-950"><Globe className="text-emerald-500" />Configuracion de la Tienda Online</h1>
             <p className="mt-2 max-w-3xl text-zinc-600">Organiza la tienda publica de {store?.name || 'tu negocio'} con una experiencia moderna tipo Shopify, Elementor y Wix.</p>
-            <p className="mt-2 text-sm font-semibold text-zinc-500">Guardado: {saveMode === 'supabase' ? 'Supabase + respaldo local' : 'respaldo local del navegador'}</p>
+            <p className="mt-2 text-sm font-semibold text-zinc-500">Guardado: {saveMode === 'postgresql' ? 'PostgreSQL + respaldo local' : 'respaldo local del navegador'}</p>
           </div>
           <div className="flex flex-wrap justify-end gap-3">
             <button onClick={() => saveSettings('draft')} disabled={saving} className="inline-flex items-center gap-2 rounded-2xl border border-zinc-200 bg-white px-5 py-3 font-black text-zinc-900 shadow-sm hover:bg-zinc-100 disabled:opacity-60"><Save size={18} /> Guardar borrador</button>
@@ -147,11 +282,11 @@ export default function WebSettingsPage() {
           </div>
         </div>
         {saved && <div className="mb-5 flex items-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 font-bold text-emerald-700"><CheckCircle size={18} /> Cambios guardados correctamente.</div>}
-        <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-5"><Stat title="Productos activos" value={stats.total} icon={<Package />} /><Stat title="Web normal" value={stats.visibleNormal} icon={<Globe />} /><Stat title="Cooperativa" value={stats.visibleCoop} icon={<ShoppingBag />} /><Stat title="Destacados" value={stats.featured} icon={<Eye />} /><Stat title="Con descuento" value={stats.discounted} icon={<BadgePercent />} /></div>
+        <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4"><Stat title="Productos activos" value={stats.total} icon={<Package />} /><Stat title="Web" value={stats.visibleNormal} icon={<Globe />} /><Stat title="Destacados" value={stats.featured} icon={<Eye />} /><Stat title="Con descuento" value={stats.discounted} icon={<BadgePercent />} /></div>
         <div className="grid gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
           <aside className="rounded-3xl border border-zinc-200 bg-white p-3 shadow-sm"><div className="grid gap-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-1">{tabs.map((tab) => <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-left font-black transition ${activeTab === tab.id ? 'bg-emerald-600 text-white shadow-sm' : 'text-zinc-700 hover:bg-zinc-100'}`}>{tab.icon}{tab.label}</button>)}</div></aside>
           <main className="space-y-6">{renderTab()}</main>
-          <aside className="rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm xl:col-span-2"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="flex items-center gap-2 text-xl font-black text-zinc-950"><Eye className="text-emerald-600" /> Vista previa</h2><p className="text-sm font-semibold text-zinc-500">Los cambios se reflejan en tiempo real.</p></div><div className="flex rounded-2xl border border-zinc-200 bg-zinc-50 p-1"><PreviewButton active={previewMode === 'desktop'} onClick={() => setPreviewMode('desktop')} icon={<Monitor size={17} />} label="Desktop" /><PreviewButton active={previewMode === 'tablet'} onClick={() => setPreviewMode('tablet')} icon={<Tablet size={17} />} label="Tablet" /><PreviewButton active={previewMode === 'mobile'} onClick={() => setPreviewMode('mobile')} icon={<Smartphone size={17} />} label="Movil" /></div></div><WebsitePreview settings={settings} mode={previewMode} categories={orderedStoreCategories.map((category) => category.name)} /><div className="mt-4 grid gap-3 sm:grid-cols-2"><a href={publicUrl || '/web'} target="_blank" rel="noopener noreferrer" className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-center font-black text-zinc-900 hover:bg-zinc-100">Abrir web normal</a><a href={coopUrl || '/web/cooperativa'} target="_blank" rel="noopener noreferrer" className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-center font-black text-zinc-900 hover:bg-zinc-100">Abrir cooperativa</a></div></aside>
+          <aside className="rounded-3xl border border-zinc-200 bg-white p-4 shadow-sm xl:col-span-2"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 className="flex items-center gap-2 text-xl font-black text-zinc-950"><Eye className="text-emerald-600" /> Vista previa</h2><p className="text-sm font-semibold text-zinc-500">Los cambios se reflejan en tiempo real.</p></div><div className="flex rounded-2xl border border-zinc-200 bg-zinc-50 p-1"><PreviewButton active={previewMode === 'desktop'} onClick={() => setPreviewMode('desktop')} icon={<Monitor size={17} />} label="Desktop" /><PreviewButton active={previewMode === 'tablet'} onClick={() => setPreviewMode('tablet')} icon={<Tablet size={17} />} label="Tablet" /><PreviewButton active={previewMode === 'mobile'} onClick={() => setPreviewMode('mobile')} icon={<Smartphone size={17} />} label="Movil" /></div></div><WebsitePreview settings={settings} mode={previewMode} categories={orderedStoreCategories.map((category) => category.name)} /><div className="mt-4"><a href={publicUrl || '/web'} target="_blank" rel="noopener noreferrer" className="block rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-center font-black text-zinc-900 hover:bg-zinc-100">Abrir tienda web</a></div></aside>
         </div>
       </div>
     </AppShell>
@@ -160,7 +295,7 @@ export default function WebSettingsPage() {
   function renderTab() {
     switch (activeTab) {
       case 'general':
-        return <TabPanel title="General" description="Define el estado de la tienda, contacto, horario y textos publicos." icon={<Settings />}><div className="grid gap-4 md:grid-cols-2"><Toggle label="Tienda online activa" checked={settings.storeOnline} onChange={(value) => update('storeOnline', value)} /><Toggle label="Destacados primero" checked={settings.showFeaturedFirst} onChange={(value) => update('showFeaturedFirst', value)} /><Input label="Correo publico" value={settings.contactEmail} onChange={(value) => update('contactEmail', value)} placeholder="info@guatapo.com" /><Input label="Telefono publico" value={settings.contactPhone} onChange={(value) => update('contactPhone', value)} placeholder="809-636-1020" /><Input label="WhatsApp pedidos" value={settings.whatsapp} onChange={(value) => update('whatsapp', value)} placeholder="18096361020" /><Input label="Direccion" value={settings.contactAddress} onChange={(value) => update('contactAddress', value)} placeholder="Direccion de la tienda" /><Input label="Mensaje sin productos" value={settings.emptyMessage} onChange={(value) => update('emptyMessage', value)} /><Textarea label="Descripcion del footer" value={settings.footerDescription} onChange={(value) => update('footerDescription', value)} className="md:col-span-2" /></div><section className="mt-6 rounded-3xl border border-zinc-200 bg-zinc-50 p-5"><div className="mb-4"><p className="text-sm font-black uppercase tracking-[0.18em] text-emerald-600">Horario de atencion</p><h3 className="mt-1 text-xl font-black text-zinc-950">Configura cada grupo de dias</h3></div><div className="grid gap-4 xl:grid-cols-3"><ScheduleGroupEditor title="Lunes a Viernes" value={settings.schedule.weekdays} onChange={(patch) => updateScheduleGroup('weekdays', patch)} /><ScheduleGroupEditor title="Sabado" value={settings.schedule.saturday} onChange={(patch) => updateScheduleGroup('saturday', patch)} /><ScheduleGroupEditor title="Domingo" value={settings.schedule.sunday} onChange={(patch) => updateScheduleGroup('sunday', patch)} /></div></section></TabPanel>
+        return <TabPanel title="General" description="Define el estado de la tienda, contacto, horario y textos publicos." icon={<Settings />}><div className="grid gap-4 md:grid-cols-2"><Toggle label="Tienda online activa" checked={settings.storeOnline} onChange={(value) => update('storeOnline', value)} /><Toggle label="Destacados primero" checked={settings.showFeaturedFirst} onChange={(value) => update('showFeaturedFirst', value)} /><Input label="Correo publico" value={settings.contactEmail} onChange={(value) => update('contactEmail', value)} placeholder="info@miempresa.com" /><Input label="Telefono publico" value={settings.contactPhone} onChange={(value) => update('contactPhone', value)} placeholder="809-636-1020" /><Input label="WhatsApp pedidos" value={settings.whatsapp} onChange={(value) => update('whatsapp', value)} placeholder="18096361020" /><Input label="Direccion" value={settings.contactAddress} onChange={(value) => update('contactAddress', value)} placeholder="Direccion de la tienda" /><Input label="Mensaje sin productos" value={settings.emptyMessage} onChange={(value) => update('emptyMessage', value)} /><Textarea label="Descripcion del footer" value={settings.footerDescription} onChange={(value) => update('footerDescription', value)} className="md:col-span-2" /></div><section className="mt-6 rounded-3xl border border-zinc-200 bg-zinc-50 p-5"><div className="mb-4"><p className="text-sm font-black uppercase tracking-[0.18em] text-emerald-600">Horario de atencion</p><h3 className="mt-1 text-xl font-black text-zinc-950">Configura cada grupo de dias</h3></div><div className="grid gap-4 xl:grid-cols-3"><ScheduleGroupEditor title="Lunes a Viernes" value={settings.schedule.weekdays} onChange={(patch) => updateScheduleGroup('weekdays', patch)} /><ScheduleGroupEditor title="Sabado" value={settings.schedule.saturday} onChange={(patch) => updateScheduleGroup('saturday', patch)} /><ScheduleGroupEditor title="Domingo" value={settings.schedule.sunday} onChange={(patch) => updateScheduleGroup('sunday', patch)} /></div></section></TabPanel>
       case 'appearance':
         return <TabPanel title="Apariencia" description="Controla las secciones visibles y la identidad visual base." icon={<LayoutTemplate />}><div className="grid gap-4 md:grid-cols-2"><ImageUploader label="Logo de la tienda" value={settings.logoUrl} onChange={(value) => update('logoUrl', value)} /><ImageUploader label="Imagen principal del banner" value={settings.heroImageUrl} onChange={(value) => update('heroImageUrl', value)} /><Toggle label="Mostrar banner principal" checked={settings.showHero} onChange={(value) => update('showHero', value)} /><Toggle label="Mostrar promociones" checked={settings.showPromoCards} onChange={(value) => update('showPromoCards', value)} /><Toggle label="Mostrar beneficios" checked={settings.showBenefits} onChange={(value) => update('showBenefits', value)} /><Toggle label="Mostrar categorias abajo" checked={settings.showCategorySection} onChange={(value) => update('showCategorySection', value)} /></div></TabPanel>
       case 'hero':
@@ -168,13 +303,13 @@ export default function WebSettingsPage() {
       case 'promotions':
         return <TabPanel title="Promociones" description="Crea varias promociones y ofertas visuales para la portada." icon={<Megaphone />} action={<button onClick={addPromotion} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 font-black text-white"><Plus size={18} /> Agregar</button>}><div className="space-y-4">{settings.promotions.map((promotion, index) => <div key={promotion.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4"><div className="mb-4 flex items-center justify-between gap-3"><h3 className="font-black text-zinc-950">Promocion {index + 1}</h3><button onClick={() => removePromotion(promotion.id)} className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-red-200 bg-white text-red-600 hover:bg-red-50"><Trash2 size={18} /></button></div><div className="grid gap-4 md:grid-cols-2"><Input label="Etiqueta" value={promotion.eyebrow} onChange={(value) => updatePromotion(promotion.id, { eyebrow: value })} /><Input label="Categoria destino" value={promotion.category} onChange={(value) => updatePromotion(promotion.id, { category: value })} /><Input label="Titulo" value={promotion.title} onChange={(value) => updatePromotion(promotion.id, { title: value })} /><Input label="Boton" value={promotion.button} onChange={(value) => updatePromotion(promotion.id, { button: value })} /><Textarea label="Descripcion" value={promotion.subtitle} onChange={(value) => updatePromotion(promotion.id, { subtitle: value })} /><ColorInput label="Color" value={promotion.color} onChange={(value) => updatePromotion(promotion.id, { color: value })} /><ImageUploader label="Imagen de promocion" value={promotion.imageUrl} onChange={(value) => updatePromotion(promotion.id, { imageUrl: value })} className="md:col-span-2" /></div></div>)}</div></TabPanel>
       case 'products':
-        return <TabPanel title="Productos" description="Resumen de visibilidad. Los descuentos e imagenes reales se editan en inventario." icon={<Package />}><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4"><InfoCard title="Productos activos" value={stats.total} icon={<Package />} /><InfoCard title="Visibles web normal" value={stats.visibleNormal} icon={<Globe />} /><InfoCard title="Visibles cooperativa" value={stats.visibleCoop} icon={<ShoppingBag />} /><InfoCard title="Con descuentos" value={stats.discounted} icon={<BadgePercent />} /></div><div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">Los productos, imagenes, disponibilidad y descuentos siguen conectados al inventario de Supabase.</div></TabPanel>
+        return <TabPanel title="Productos" description="Resumen de visibilidad. Los descuentos e imagenes reales se editan en inventario." icon={<Package />}><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3"><InfoCard title="Productos activos" value={stats.total} icon={<Package />} /><InfoCard title="Visibles en la web" value={stats.visibleNormal} icon={<Globe />} /><InfoCard title="Con descuentos" value={stats.discounted} icon={<BadgePercent />} /></div><div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">Los productos, imagenes, disponibilidad y descuentos se administran desde Inventario.</div></TabPanel>
       case 'categories':
         return <TabPanel title="Categorias" description="Controla el orden e iconos del catalogo publico." icon={<Tags />}><div className="grid gap-4 md:grid-cols-2"><Toggle label="Mostrar menu lateral de categorias" checked={settings.showCategorySection} onChange={(value) => update('showCategorySection', value)} /><Toggle label="Mostrar destacados primero" checked={settings.showFeaturedFirst} onChange={(value) => update('showFeaturedFirst', value)} /></div><section className="mt-5 rounded-2xl border border-zinc-200 bg-zinc-50 p-4"><div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-xl font-black text-zinc-950">Orden del catalogo</h3><p className="text-sm font-semibold text-zinc-500">Arrastra las categorias para definir como aparecen en la tienda publica.</p></div><button type="button" onClick={() => updateCategoryOrder(orderedStoreCategories.map((category) => category.name))} className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-black text-zinc-800 hover:bg-zinc-100">Guardar orden actual</button></div>{orderedStoreCategories.length === 0 ? <div className="rounded-2xl border border-zinc-200 bg-white p-4 text-sm font-semibold text-zinc-700">Aun no hay categorias activas. Agregalas en Configuracion o Inventario y apareceran aqui automaticamente.</div> : <div className="space-y-2">{orderedStoreCategories.map((category) => <div key={`order-${category.id}`} draggable onDragStart={() => setDraggedCategory(category.name)} onDragOver={(event) => event.preventDefault()} onDrop={() => draggedCategory && reorderCatalogCategory(draggedCategory, category.name)} onDragEnd={() => setDraggedCategory(null)} className={`flex cursor-grab items-center gap-3 rounded-2xl border bg-white px-4 py-3 shadow-sm transition ${draggedCategory === category.name ? 'border-emerald-300 opacity-70' : 'border-zinc-200 hover:border-emerald-300'}`}><GripVertical size={18} className="text-zinc-400" /><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700">{renderWebCategoryIcon(category.name, settings.categoryIcons?.[category.name], 18)}</span><span className="font-black text-zinc-950">{category.name}</span></div>)}</div>}</section><div className="mt-5 space-y-3">{orderedStoreCategories.map((category) => { const iconValue = settings.categoryIcons?.[category.name] || 'auto'; const isPreset = WEB_CATEGORY_ICON_OPTIONS.some((option) => option.key === iconValue); return <div key={category.id} className="grid gap-3 rounded-2xl border border-zinc-200 bg-zinc-50 p-4 md:grid-cols-[minmax(0,1fr)_220px]"><div className="flex items-center gap-3"><span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-emerald-700 shadow-sm">{renderWebCategoryIcon(category.name, iconValue, 20)}</span><div><p className="font-black text-zinc-950">{category.name}</p><p className="text-xs font-semibold text-zinc-500">Categoria conectada al catalogo publico.</p></div></div><div className="space-y-2"><select value={isPreset ? iconValue : 'custom'} onChange={(event) => updateCategoryIcon(category.name, event.target.value === 'custom' ? 'PC' : event.target.value)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 font-bold text-zinc-950 outline-none focus:border-emerald-500">{WEB_CATEGORY_ICON_OPTIONS.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}<option value="custom">Personalizado</option></select>{!isPreset && <Input label="Icono personalizado" value={iconValue} onChange={(value) => updateCategoryIcon(category.name, value)} placeholder="Ej: PC, Cel, TV" />}</div></div> })}</div><div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">El catalogo de la pagina web se alimenta de estas categorias activas. Si no eliges icono, el sistema usa uno automatico segun el nombre.</div></TabPanel>
       case 'benefits':
         return <TabPanel title="Beneficios" description="Agrega, edita o elimina ventajas que aparecen en la tienda." icon={<ShieldCheck />} action={<button onClick={addBenefit} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 font-black text-white"><Plus size={18} /> Agregar</button>}><div className="space-y-4">{settings.benefits.map((benefit, index) => <div key={benefit.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4"><div className="mb-4 flex items-center justify-between gap-3"><h3 className="font-black text-zinc-950">Beneficio {index + 1}</h3><button onClick={() => removeBenefit(benefit.id)} className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-red-200 bg-white text-red-600 hover:bg-red-50"><Trash2 size={18} /></button></div><div className="grid gap-4 md:grid-cols-3"><Input label="Titulo" value={benefit.title} onChange={(value) => updateBenefit(benefit.id, { title: value })} /><Input label="Icono" value={benefit.icon} onChange={(value) => updateBenefit(benefit.id, { icon: value })} /><Input label="Descripcion" value={benefit.description} onChange={(value) => updateBenefit(benefit.id, { description: value })} /></div></div>)}</div></TabPanel>
       case 'social':
-        return <TabPanel title="Redes Sociales" description="Conecta los enlaces publicos y canales de contacto." icon={<Share2 />}><div className="grid gap-4 md:grid-cols-2"><Input label="Facebook" value={settings.facebook} onChange={(value) => update('facebook', value)} placeholder="https://facebook.com/..." icon={<Share2 size={18} />} /><Input label="Instagram" value={settings.instagram} onChange={(value) => update('instagram', value)} placeholder="@guatapord" icon={<Share2 size={18} />} /><Input label="TikTok" value={settings.tiktok} onChange={(value) => update('tiktok', value)} placeholder="https://tiktok.com/@..." /><Input label="YouTube" value={settings.youtube} onChange={(value) => update('youtube', value)} placeholder="https://youtube.com/..." icon={<Share2 size={18} />} /><Input label="WhatsApp" value={settings.whatsapp} onChange={(value) => update('whatsapp', value)} placeholder="18096361020" /><Input label="Correo" value={settings.contactEmail} onChange={(value) => update('contactEmail', value)} placeholder="info@guatapo.com" /><Input label="Ubicacion en Google Maps" value={settings.googleMapsUrl} onChange={(value) => update('googleMapsUrl', value)} placeholder="https://maps.google.com/..." className="md:col-span-2" icon={<LinkIcon size={18} />} /></div></TabPanel>
+        return <TabPanel title="Redes Sociales" description="Conecta los enlaces publicos y canales de contacto." icon={<Share2 />}><div className="grid gap-4 md:grid-cols-2"><Input label="Facebook" value={settings.facebook} onChange={(value) => update('facebook', value)} placeholder="https://facebook.com/..." icon={<Share2 size={18} />} /><Input label="Instagram" value={settings.instagram} onChange={(value) => update('instagram', value)} placeholder="@miempresa" icon={<Share2 size={18} />} /><Input label="TikTok" value={settings.tiktok} onChange={(value) => update('tiktok', value)} placeholder="https://tiktok.com/@..." /><Input label="YouTube" value={settings.youtube} onChange={(value) => update('youtube', value)} placeholder="https://youtube.com/..." icon={<Share2 size={18} />} /><Input label="WhatsApp" value={settings.whatsapp} onChange={(value) => update('whatsapp', value)} placeholder="18096361020" /><Input label="Correo" value={settings.contactEmail} onChange={(value) => update('contactEmail', value)} placeholder="info@miempresa.com" /><Input label="Ubicacion en Google Maps" value={settings.googleMapsUrl} onChange={(value) => update('googleMapsUrl', value)} placeholder="https://maps.google.com/..." className="md:col-span-2" icon={<LinkIcon size={18} />} /></div></TabPanel>
       case 'colors':
         return <TabPanel title="Colores" description="Ajusta la paleta completa de la tienda con selectores visuales." icon={<Palette />}><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3"><ColorInput label="Color principal" value={settings.primaryColor} onChange={(value) => update('primaryColor', value)} /><ColorInput label="Color secundario" value={settings.secondaryColor} onChange={(value) => update('secondaryColor', value)} /><ColorInput label="Color ofertas" value={settings.accentColor} onChange={(value) => update('accentColor', value)} /><ColorInput label="Fondo" value={settings.backgroundColor} onChange={(value) => update('backgroundColor', value)} /><ColorInput label="Header" value={settings.headerColor} onChange={(value) => update('headerColor', value)} /><ColorInput label="Texto" value={settings.textColor} onChange={(value) => update('textColor', value)} /><ColorInput label="Botones" value={settings.buttonColor} onChange={(value) => update('buttonColor', value)} /><ColorInput label="Precios" value={settings.priceColor} onChange={(value) => update('priceColor', value)} /></div></TabPanel>
       case 'seo':
@@ -300,13 +435,3 @@ function WebsitePreview({ settings, mode, categories: configuredCategories }: { 
     </div>
   )
 }
-
-
-
-
-
-
-
-
-
-

@@ -11,9 +11,16 @@ type ProductCardProps = {
   image: string | null | undefined
   onCartChange?: () => void
   productUrlBase?: string
+  whatsappNumber?: string
 }
 
-export default function ProductCard({ product, image, onCartChange, productUrlBase = '/web/producto' }: ProductCardProps) {
+export default function ProductCard({
+  product,
+  image,
+  onCartChange,
+  productUrlBase = '/web/producto',
+  whatsappNumber = '',
+}: ProductCardProps) {
   const stock = Number(product.stock || 0)
   const availability = productAvailability(stock)
   const productUrl = `${productUrlBase}/${product.slug || product.id}`
@@ -51,7 +58,7 @@ export default function ProductCard({ product, image, onCartChange, productUrlBa
       <div className="flex flex-1 flex-col p-4">
         <div className="mb-2 flex items-center gap-1 text-xs font-black text-orange-500">
           {Array.from({ length: 5 }).map((_, index) => <Star key={index} size={13} fill="currentColor" />)}
-          <span className="ml-1 text-zinc-500">Guatapo</span>
+          <span className="ml-1 text-zinc-500">Producto destacado</span>
         </div>
 
         <Link href={productUrl}>
@@ -69,7 +76,7 @@ export default function ProductCard({ product, image, onCartChange, productUrlBa
           <button type="button" onClick={handleAdd} disabled={!availability.available} className="flex h-11 items-center justify-center gap-1.5 rounded-full bg-zinc-950 px-3 text-sm font-black text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:bg-zinc-300">
             <Plus size={18} /> Agregar
           </button>
-          <button type="button" onClick={() => openProductWhatsApp(productWithDiscount, 1)} disabled={!availability.available} className="flex h-11 items-center justify-center gap-1.5 rounded-full bg-emerald-600 px-3 text-sm font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-300">
+          <button type="button" onClick={() => openProductWhatsApp(productWithDiscount, 1, whatsappNumber)} disabled={!availability.available} className="flex h-11 items-center justify-center gap-1.5 rounded-full bg-emerald-600 px-3 text-sm font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-300">
             <MessageCircle size={18} /> Comprar
           </button>
         </div>

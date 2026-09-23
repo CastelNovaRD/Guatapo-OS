@@ -1,10 +1,8 @@
-﻿'use client'
+'use client'
 
 import { useEffect, useState } from 'react'
 import AppShell from '@/components/AppShell'
-import { supabase } from '@/lib/supabase'
 import { getProductMainImage, type ProductImage } from '@/lib/product-images'
-import { getCurrentStoreId } from '@/lib/store-context'
 import { ImageIcon } from 'lucide-react'
 import {
   FileText,
@@ -27,17 +25,19 @@ type Product = {
 
 type QuoteCustomer = {
   id: string
-  company_name: string
-  rnc: string | null
+  full_name: string
+  document: string | null
   phone: string | null
   address: string | null
+  email: string | null
 }
 
 type Quote = {
   id: string
-  quote_number: string | null
+  quote_number: string
   quote_customer_id: string | null
   subtotal: number
+  tax: number
   tax_percent: number
   tax_amount: number
   discount: number
@@ -45,6 +45,13 @@ type Quote = {
   status: string
   ncf: string | null
   created_at: string
+  customer: {
+    customer_id: string | null
+    full_name: string
+    document: string | null
+    phone: string | null
+    address: string | null
+  } | null
 }
 
 type QuoteItem = {
@@ -55,23 +62,6 @@ type QuoteItem = {
   tax_percent: number
   discount: number
   total: number
-}
-
-type QuoteItemRow = QuoteItem & {
-  id?: string
-  quote_id?: string
-  store_id?: string
-}
-
-type ProductStockRow = {
-  id: string
-  name: string
-  stock: number
-}
-
-type AvailableNcf = {
-  id: string
-  ncf: string
 }
 
 const FISCAL_RECEIPT_TYPES = [
@@ -87,7 +77,6 @@ const FISCAL_RECEIPT_TYPES = [
 
 export default function CotizacionesPage() {
   const [products, setProducts] = useState<Product[]>([])
-  const [storeId, setStoreId] = useState<string | null>(null)
   const [customers, setCustomers] = useState<QuoteCustomer[]>([])
   const [quotes, setQuotes] = useState<Quote[]>([])
   const [quoteItems, setQuoteItems] = useState<QuoteItem[]>([])
@@ -111,59 +100,51 @@ export default function CotizacionesPage() {
   const [quoteToInvoice, setQuoteToInvoice] = useState<Quote | null>(null)
   const [ncfNumber, setNcfNumber] = useState('')
   const [fiscalReceiptType, setFiscalReceiptType] = useState('B01')
-  const [availableNcf, setAvailableNcf] = useState<AvailableNcf | null>(null)
-  const [loadingNcf, setLoadingNcf] = useState(false)
   const [lastInvoiceId, setLastInvoiceId] = useState<string | null>(null)
   const [lastInvoicePrintId, setLastInvoicePrintId] = useState<string | null>(null)
-  const [visibleProductsLimit, setVisibleProductsLimit] = useState(10)
+  const [visibleProductsLimit] = useState(10)
 
   useEffect(() => {
     loadData()
   }, [])
 
   async function loadData() {
-    const currentStoreId = await getCurrentStoreId()
-    setStoreId(currentStoreId)
+    try {
+      const [productsResponse, customersResponse, quotesResponse] = await Promise.all([
+        fetch('/api/products?active=true&limit=200'),
+        fetch('/api/customers?active=true&limit=200'),
+        fetch('/api/quotes'),
+      ])
+      if (!productsResponse.ok || !customersResponse.ok || !quotesResponse.ok) {
+        throw new Error('No se pudieron cargar las cotizaciones.')
+      }
 
-    if (!currentStoreId) {
-      return alert('Este usuario no tiene una tienda asignada.')
+      const [productsData, customersData, quotesData] = await Promise.all([
+        productsResponse.json() as Promise<Product[]>,
+        customersResponse.json() as Promise<QuoteCustomer[]>,
+        quotesResponse.json() as Promise<Array<Omit<Quote, 'quote_customer_id' | 'tax_percent' | 'tax_amount' | 'discount' | 'ncf'>>>,
+      ])
+      const images = await Promise.all(
+        productsData.map(async (product) => {
+          const response = await fetch(`/api/products/${product.id}/images`)
+          return response.ok ? response.json() as Promise<ProductImage[]> : []
+        })
+      )
+
+      setProducts(productsData)
+      setProductImages(images.flat())
+      setCustomers(customersData)
+      setQuotes(quotesData.map((quote) => ({
+        ...quote,
+        quote_customer_id: quote.customer?.customer_id ?? null,
+        tax_percent: quote.subtotal > 0 ? (quote.tax / quote.subtotal) * 100 : 0,
+        tax_amount: quote.tax,
+        discount: Math.max(0, quote.subtotal + quote.tax - quote.total),
+        ncf: null,
+      })))
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'No se pudieron cargar las cotizaciones.')
     }
-
-    const { data: productsData } = await supabase
-      .from('products')
-      .select('id, name, sku, sale_price, stock')
-      .eq('store_id', currentStoreId)
-      .eq('active', true)
-      .order('name')
-
-    const { data: storeSettings } = await supabase
-      .from('stores')
-      .select('quote_products_limit')
-      .eq('id', currentStoreId)
-      .maybeSingle()
-
-    const { data: customersData } = await supabase
-      .from('quote_customers')
-      .select('*')
-      .eq('store_id', currentStoreId)
-      .order('created_at', { ascending: false })
-
-    const { data: quotesData } = await supabase
-      .from('quotes')
-      .select('*')
-      .eq('store_id', currentStoreId)
-      .order('created_at', { ascending: false })
-
-    const { data: imagesData } = await supabase
-  .from('product_images')
-  .select('id, product_id, image_url, is_primary, sort_order')
-  .eq('store_id', currentStoreId)
-  .order('sort_order')
-
-    setProducts(productsData || [])
-    setProductImages(imagesData || [])
-    setCustomers(customersData || [])
-    setQuotes(quotesData || [])
   }
 
   const filteredProducts = (() => {
@@ -202,7 +183,7 @@ export default function CotizacionesPage() {
 
   function addProduct(product: Product) {
     if (Number(product.stock || 0) <= 0) {
-      return alert('Este producto está agotado y no se puede cotizar.')
+      return alert('Este producto est� agotado y no se puede cotizar.')
     }
 
     const existing = quoteItems.find((item) => item.product_id === product.id)
@@ -268,7 +249,7 @@ export default function CotizacionesPage() {
       if (!product) continue
 
       if (Number(product.stock || 0) <= 0) {
-        alert(`${item.product_name} está agotado y no se puede cotizar.`)
+        alert(`${item.product_name} est� agotado y no se puede cotizar.`)
         return false
       }
 
@@ -285,68 +266,41 @@ export default function CotizacionesPage() {
 
   async function saveQuote() {
     if (!selectedCustomerId) return alert('Selecciona un cliente/empresa')
-    if (quoteItems.length === 0) return alert('Agrega productos a la cotización')
-    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
+    if (quoteItems.length === 0) return alert('Agrega productos a la cotizaci�n')
 
     if (!validateQuoteStock(quoteItems)) return
 
     const payload = {
-      store_id: storeId,
-      quote_customer_id: selectedCustomerId,
       subtotal,
-      tax_percent: Number(taxPercent || 18),
-      tax_amount: taxAmount,
-      discount,
+      tax: taxAmount,
       total,
       status: 'pending',
+      customer: { customerId: selectedCustomerId },
+      items: quoteItems.map((item) => ({
+        productId: item.product_id,
+        productName: item.product_name,
+        quantity: item.quantity,
+        unitPrice: item.unit_price,
+        tax: Math.max(0, item.unit_price * item.quantity - Number(item.discount || 0)) * (Number(taxPercent || 0) / 100),
+        total: Math.max(0, item.unit_price * item.quantity - Number(item.discount || 0)),
+      })),
     }
 
-    let quoteId = editingQuote?.id
-
-    if (editingQuote) {
-      if (editingQuote.status === 'completed') {
-        return alert('Esta cotización ya fue facturada y no se puede editar.')
-      }
-
-      const { error } = await supabase
-        .from('quotes')
-        .update(payload)
-        .eq('store_id', storeId)
-        .eq('id', editingQuote.id)
-
-      if (error) return alert(error.message)
-
-      await supabase.from('quote_items').delete().eq('store_id', storeId).eq('quote_id', editingQuote.id)
-    } else {
-      const { data: quote, error } = await supabase
-        .from('quotes')
-        .insert(payload)
-        .select('id, quote_number')
-        .single()
-
-      if (error) return alert(error.message)
-      quoteId = quote.id
+    if (editingQuote?.status === 'completed') {
+      return alert('Esta cotizaci�n ya fue facturada y no se puede editar.')
     }
 
-    const items = quoteItems.map((item) => ({
-      quote_id: quoteId,
-      store_id: storeId,
-      product_id: item.product_id,
-      product_name: item.product_name,
-      quantity: item.quantity,
-      unit_price: item.unit_price,
-      tax_percent: Number(taxPercent || 18),
-      discount: Number(item.discount || 0),
-      total: Math.max(
-        0,
-        item.unit_price * item.quantity - Number(item.discount || 0)
-      ),
-    }))
+    const response = await fetch(editingQuote ? `/api/quotes/${editingQuote.id}` : '/api/quotes', {
+      method: editingQuote ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(editingQuote ? { ...payload, quoteNumber: editingQuote.quote_number } : payload),
+    })
+    if (!response.ok) {
+      const data = await response.json().catch(() => null) as { error?: string } | null
+      return alert(data?.error || 'No se pudo guardar la cotizaci�n.')
+    }
 
-    const { error: itemsError } = await supabase.from('quote_items').insert(items)
-    if (itemsError) return alert(itemsError.message)
-
-    alert(editingQuote ? 'Cotización actualizada' : 'Cotización guardada')
+    alert(editingQuote ? 'Cotizaci�n actualizada' : 'Cotizaci�n guardada')
 
     resetQuoteForm()
     setTab('quotes')
@@ -355,229 +309,80 @@ export default function CotizacionesPage() {
 
   async function editQuote(quote: Quote) {
     if (quote.status === 'completed') {
-      return alert('Esta cotización ya fue facturada y no se puede editar.')
+      return alert('Esta cotizaci�n ya fue facturada y no se puede editar.')
     }
 
-    const { data: items, error } = await supabase
-      .from('quote_items')
-      .select('product_id, product_name, quantity, unit_price, tax_percent, discount, total')
-      .eq('store_id', storeId)
-      .eq('quote_id', quote.id)
-
-    if (error) return alert(error.message)
-
-    const itemDiscounts =
-      items?.reduce((sum, item) => sum + Number(item.discount || 0), 0) || 0
+    const response = await fetch(`/api/quotes/${quote.id}`)
+    if (!response.ok) return alert('No se pudo cargar la cotizaci�n.')
+    const detail = await response.json() as Quote & { items: Array<Omit<QuoteItem, 'tax_percent' | 'discount'>> }
+    const quoteTaxPercent = detail.subtotal > 0 ? (detail.tax / detail.subtotal) * 100 : 0
 
     setEditingQuote(quote)
-    setSelectedCustomerId(quote.quote_customer_id || '')
-    setTaxPercent(String(quote.tax_percent || 18))
-    setQuoteDiscount(String(Math.max(0, Number(quote.discount || 0) - itemDiscounts)))
-    setQuoteItems(items || [])
+    setSelectedCustomerId(detail.customer?.customer_id || '')
+    setTaxPercent(String(quoteTaxPercent || 18))
+    setQuoteDiscount(String(Math.max(0, detail.subtotal + detail.tax - detail.total)))
+    setQuoteItems(detail.items.map((item) => ({ ...item, tax_percent: quoteTaxPercent, discount: 0 })))
     setTab('new')
   }
 
   function openInvoiceModal(quote: Quote) {
-    if (quote.status === 'completed') return alert('Esta cotización ya fue facturada')
+    if (quote.status === 'completed') return alert('Esta cotizaci�n ya fue facturada')
 
     setQuoteToInvoice(quote)
     setNcfNumber('')
     setFiscalReceiptType('B01')
-    setAvailableNcf(null)
     setLastInvoiceId(null)
     setLastInvoicePrintId(null)
     setInvoiceModal(true)
-    loadNextAvailableNcf('B01')
-  }
-
-  async function loadNextAvailableNcf(type = fiscalReceiptType) {
-    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
-
-    setLoadingNcf(true)
-
-    const { data, error } = await supabase
-      .from('ncf_receipts')
-      .select('id, ncf')
-      .eq('store_id', storeId)
-      .eq('receipt_type', type)
-      .neq('status', 'used')
-      .order('ncf', { ascending: true })
-      .limit(1)
-      .maybeSingle()
-
-    setLoadingNcf(false)
-
-    if (error) {
-      setAvailableNcf(null)
-      return alert(
-        'No pude cargar comprobantes disponibles. Revisa Ventas > Comprobantes.'
-      )
-    }
-
-    setAvailableNcf(data || null)
-    setNcfNumber(data?.ncf || '')
   }
 
   async function confirmInvoiceQuote() {
     if (!quoteToInvoice) return
-    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
-    if (!availableNcf) {
-      return alert('No hay NCF disponibles. Agrega comprobantes en Ventas > Comprobantes.')
-    }
-
-    const fiscalCustomer = customers.find((customer) => customer.id === quoteToInvoice.quote_customer_id)
-    const fiscalName = fiscalCustomer?.company_name?.trim() || ''
-    const fiscalRnc = fiscalCustomer?.rnc?.trim() || ''
+    const fiscalName = quoteToInvoice.customer?.full_name.trim() || ''
+    const fiscalRnc = quoteToInvoice.customer?.document?.trim() || ''
 
     if (!fiscalName || !fiscalRnc) {
-      return alert('Para facturar con comprobante debes completar la razón social y RNC/Cédula del cliente.')
+      return alert('Para facturar con comprobante debes completar la raz�n social y RNC/C�dula del cliente.')
     }
 
-    const nextNcf = availableNcf.ncf.trim()
-    if (!nextNcf.startsWith(fiscalReceiptType)) {
-      return alert(`El NCF disponible no corresponde al tipo ${fiscalReceiptType}. Actualiza el comprobante disponible.`)
+    const response = await fetch(`/api/quotes/${quoteToInvoice.id}/convert-to-sale`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fiscalReceiptType }),
+    })
+    const result = await response.json().catch(() => null) as {
+      saleId?: string
+      invoiceNumber?: string | null
+      ncf?: string
+      error?: string
+    } | null
+    if (!response.ok || !result?.saleId || !result.ncf) {
+      return alert(result?.error || 'No se pudo generar la factura.')
     }
 
-    const { data: items } = await supabase
-      .from('quote_items')
-      .select('*')
-      .eq('store_id', storeId)
-      .eq('quote_id', quoteToInvoice.id)
-
-    const itemsToInvoice = (items || []) as QuoteItemRow[]
-    const productIds = itemsToInvoice.map((item) => item.product_id).filter(Boolean)
-    const { data: currentProducts, error: stockError } = await supabase
-      .from('products')
-      .select('id, name, stock')
-      .eq('store_id', storeId)
-      .in('id', productIds.length ? productIds : ['00000000-0000-0000-0000-000000000000'])
-
-    if (stockError) return alert('No pude validar el inventario: ' + stockError.message)
-
-    const currentStockByProduct = new Map(
-      ((currentProducts || []) as ProductStockRow[]).map((product) => [
-        product.id,
-        Number(product.stock || 0),
-      ])
-    )
-
-    for (const item of itemsToInvoice) {
-      const currentStock = currentStockByProduct.get(item.product_id) || 0
-      if (currentStock <= 0) {
-        return alert(`${item.product_name} está agotado y no se puede facturar.`)
-      }
-
-      if (Number(item.quantity || 0) > currentStock) {
-        return alert(
-          `${item.product_name} no tiene stock suficiente. Disponible: ${currentStock}, solicitado: ${item.quantity}.`
-        )
-      }
-    }
-
-    const { data: sale, error } = await supabase
-      .from('sales')
-      .insert({
-        store_id: storeId,
-        sale_channel: 'quote',
-        subtotal: quoteToInvoice.subtotal,
-        discount: quoteToInvoice.discount,
-        itbis: quoteToInvoice.tax_amount,
-        total: quoteToInvoice.total,
-        card_fee: 0,
-        net_received: quoteToInvoice.total,
-        status: 'paid',
-        ncf: nextNcf,
-        fiscal_receipt_type: fiscalReceiptType,
-        fiscal_status: 'ready_to_send',
-        fiscal_customer_name: fiscalName,
-        fiscal_customer_rnc: fiscalRnc,
-        fiscal_customer_phone: fiscalCustomer?.phone || null,
-        fiscal_customer_address: fiscalCustomer?.address || null,
-        notes: `Venta generada desde cotización ${
-          quoteToInvoice.quote_number ||
-          `#${quoteToInvoice.id.slice(0, 8).toUpperCase()}`
-        }`,
-      })
-      .select('id, invoice_number')
-      .single()
-
-    if (error) return alert(error.message)
-
-    const saleItems =
-      itemsToInvoice.map((item) => ({
-        sale_id: sale.id,
-        store_id: storeId,
-        product_id: item.product_id,
-        product_name: item.product_name,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        cost: 0,
-        discount: item.discount,
-        total: item.total,
-      })) || []
-
-    if (saleItems.length > 0) {
-      await supabase.from('sale_items').insert(saleItems)
-
-      for (const item of items || []) {
-        const currentStock = currentStockByProduct.get(item.product_id)
-        if (typeof currentStock === 'number') {
-          await supabase
-            .from('products')
-            .update({ stock: currentStock - item.quantity })
-            .eq('store_id', storeId)
-            .eq('id', item.product_id)
-        }
-      }
-    }
-
-    await supabase
-      .from('quotes')
-      .update({
-        status: 'completed',
-        ncf: nextNcf,
-        fiscal_receipt_type: fiscalReceiptType,
-        fiscal_status: 'ready_to_send',
-        fiscal_customer_name: fiscalName,
-        fiscal_customer_rnc: fiscalRnc,
-      })
-      .eq('store_id', storeId)
-      .eq('id', quoteToInvoice.id)
-
-    await supabase
-      .from('ncf_receipts')
-      .update({
-        status: 'used',
-        used_sale_id: sale.id,
-        used_company_name: fiscalName,
-        used_customer_rnc: fiscalRnc,
-        used_at: new Date().toISOString(),
-      })
-      .eq('store_id', storeId)
-      .eq('id', availableNcf.id)
-
-    setLastInvoiceId(sale.invoice_number || sale.id)
-    setNcfNumber(nextNcf)
-    setLastInvoicePrintId(sale.id)
+    setLastInvoiceId(result.invoiceNumber || result.saleId)
+    setNcfNumber(result.ncf)
+    setLastInvoicePrintId(result.saleId)
     loadData()
   }
 
   async function deleteQuote(quote: Quote) {
     if (quote.status === 'completed') {
-      return alert('Esta cotización ya fue facturada y no se puede borrar.')
+      return alert('Esta cotizaci�n ya fue facturada y no se puede borrar.')
     }
 
-    if (!confirm('¿Eliminar esta cotización?')) return
+    if (!confirm('�Eliminar esta cotizaci�n?')) return
 
-    await supabase.from('quotes').delete().eq('store_id', storeId).eq('id', quote.id)
+    const response = await fetch(`/api/quotes/${quote.id}`, { method: 'DELETE' })
+    if (!response.ok) return alert('No se pudo eliminar la cotizaci�n.')
     loadData()
   }
 
   function openCustomerModal(customer?: QuoteCustomer) {
     if (customer) {
       setEditingCustomer(customer)
-      setCompanyName(customer.company_name)
-      setRnc(customer.rnc || '')
+      setCompanyName(customer.full_name)
+      setRnc(customer.document || '')
       setPhone(customer.phone || '')
       setAddress(customer.address || '')
     } else {
@@ -593,20 +398,23 @@ export default function CotizacionesPage() {
 
   async function saveCustomer() {
     if (!companyName.trim()) return alert('Escribe el nombre de la empresa')
-    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
 
     const payload = {
-      store_id: storeId,
-      company_name: companyName,
-      rnc: rnc || null,
+      fullName: companyName,
+      document: rnc || null,
+      documentType: rnc ? 'rnc' : null,
       phone: phone || null,
       address: address || null,
     }
 
-    if (editingCustomer) {
-      await supabase.from('quote_customers').update(payload).eq('store_id', storeId).eq('id', editingCustomer.id)
-    } else {
-      await supabase.from('quote_customers').insert(payload)
+    const response = await fetch(editingCustomer ? `/api/customers/${editingCustomer.id}` : '/api/customers', {
+      method: editingCustomer ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!response.ok) {
+      const data = await response.json().catch(() => null) as { error?: string } | null
+      return alert(data?.error || 'No se pudo guardar el cliente.')
     }
 
     setCustomerModal(false)
@@ -614,17 +422,14 @@ export default function CotizacionesPage() {
   }
 
   async function deleteCustomer(id: string) {
-    if (!confirm('¿Eliminar este cliente?')) return
-    await supabase.from('quote_customers').delete().eq('store_id', storeId).eq('id', id)
+    if (!confirm('�Eliminar este cliente?')) return
+    const response = await fetch(`/api/customers/${id}`, { method: 'DELETE' })
+    if (!response.ok) return alert('No se pudo eliminar el cliente.')
     loadData()
   }
 
   function customerName(id: string | null) {
-    return customers.find((c) => c.id === id)?.company_name || 'Sin cliente'
-  }
-
-  function customerFiscalData(id: string | null) {
-    return customers.find((customer) => customer.id === id) || null
+    return customers.find((c) => c.id === id)?.full_name || 'Sin cliente'
   }
 
   return (
@@ -650,7 +455,7 @@ export default function CotizacionesPage() {
 
       <div className="mb-6 flex gap-3">
         <Tab
-          label={editingQuote ? 'Editar cotización' : 'Nueva cotización'}
+          label={editingQuote ? 'Editar cotizaci�n' : 'Nueva cotizaci�n'}
           active={tab === 'new'}
           onClick={() => setTab('new')}
         />
@@ -663,7 +468,7 @@ export default function CotizacionesPage() {
           <section className="min-w-0">
             {editingQuote && (
               <div className="mb-4 rounded-2xl border border-orange-200 bg-orange-50 p-4 text-orange-700">
-                Editando cotización{' '}
+                Editando cotizaci�n{' '}
                 <strong>
                   {editingQuote.quote_number ||
                     `#${editingQuote.id.slice(0, 8).toUpperCase()}`}
@@ -706,7 +511,7 @@ export default function CotizacionesPage() {
 
                   <h3 className="font-bold">{product.name}</h3>
                   <p className="text-sm text-zinc-500">
-                    SKU: {product.sku || '-'} · Stock: {product.stock}
+                    SKU: {product.sku || '-'} � Stock: {product.stock}
                   </p>
                   <p className="mt-3 text-xl font-bold text-emerald-600">
                     {formatMoney(product.sale_price)}
@@ -718,7 +523,7 @@ export default function CotizacionesPage() {
 
           <aside className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
             <h2 className="text-xl font-bold">
-              {editingQuote ? 'Editar cotización' : 'Nueva cotización'}
+              {editingQuote ? 'Editar cotizaci�n' : 'Nueva cotizaci�n'}
             </h2>
 
             <label className="mt-4 block text-sm text-zinc-500">Cliente empresa</label>
@@ -730,7 +535,7 @@ export default function CotizacionesPage() {
               <option value="">Seleccionar cliente</option>
               {customers.map((customer) => (
                 <option key={customer.id} value={customer.id}>
-                  {customer.company_name}
+                  {customer.full_name}
                 </option>
               ))}
             </select>
@@ -786,7 +591,7 @@ export default function CotizacionesPage() {
               onClick={saveQuote}
               className="mt-5 w-full rounded-xl bg-emerald-500 py-4 font-bold text-white hover:bg-emerald-600"
             >
-              {editingQuote ? 'Guardar cambios' : 'Guardar cotización'}
+              {editingQuote ? 'Guardar cambios' : 'Guardar cotizaci�n'}
             </button>
 
             {editingQuote && (
@@ -794,7 +599,7 @@ export default function CotizacionesPage() {
                 onClick={resetQuoteForm}
                 className="mt-3 w-full rounded-xl border border-zinc-300 py-3 font-bold text-zinc-700 hover:bg-zinc-100"
               >
-                Cancelar ediciÃ³n
+                Cancelar edición
               </button>
             )}
           </aside>
@@ -811,13 +616,13 @@ export default function CotizacionesPage() {
             <table className="w-full text-left">
               <thead className="text-sm text-zinc-500">
                 <tr className="border-b border-zinc-200">
-                  <th className="p-4">Cotización</th>
+                  <th className="p-4">Cotizaci�n</th>
                   <th className="p-4">Cliente</th>
                   <th className="p-4">NCF</th>
                   <th className="p-4">Fecha</th>
                   <th className="p-4">Total</th>
                   <th className="p-4">Estado</th>
-                  <th className="p-4 text-right">Acciónes</th>
+                  <th className="p-4 text-right">Acci�nes</th>
                 </tr>
               </thead>
 
@@ -829,7 +634,7 @@ export default function CotizacionesPage() {
                         `#${quote.id.slice(0, 8).toUpperCase()}`}
                     </td>
 
-                    <td className="p-4">{customerName(quote.quote_customer_id)}</td>
+                    <td className="p-4">{quote.customer?.full_name || customerName(quote.quote_customer_id)}</td>
                     <td className="p-4">{quote.ncf || '-'}</td>
                     <td className="p-4">{formatDate(quote.created_at)}</td>
 
@@ -857,7 +662,7 @@ export default function CotizacionesPage() {
                           className="rounded-lg border border-zinc-300 p-2 disabled:cursor-not-allowed disabled:opacity-40"
                           title={
                             quote.status === 'completed'
-                              ? 'No se puede editar una cotización facturada'
+                              ? 'No se puede editar una cotizaci�n facturada'
                               : 'Editar'
                           }
                         >
@@ -908,11 +713,11 @@ export default function CotizacionesPage() {
               key={customer.id}
               className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm"
             >
-              <h3 className="text-xl font-bold">{customer.company_name}</h3>
-              <p className="text-sm text-zinc-500">RNC: {customer.rnc || '-'}</p>
+              <h3 className="text-xl font-bold">{customer.full_name}</h3>
+              <p className="text-sm text-zinc-500">RNC: {customer.document || '-'}</p>
               <p className="text-sm text-zinc-500">Tel: {customer.phone || '-'}</p>
               <p className="text-sm text-zinc-500">
-                Dirección: {customer.address || '-'}
+                Direcci�n: {customer.address || '-'}
               </p>
 
               <div className="mt-4 flex gap-2">
@@ -949,8 +754,8 @@ export default function CotizacionesPage() {
             <div className="grid grid-cols-1 gap-4 p-6 md:grid-cols-2">
               <Input label="Nombre empresa" value={companyName} onChange={setCompanyName} />
               <Input label="RNC" value={rnc} onChange={setRnc} />
-              <Input label="Teléfono" value={phone} onChange={setPhone} />
-              <Input label="Dirección opcional" value={address} onChange={setAddress} />
+              <Input label="Tel�fono" value={phone} onChange={setPhone} />
+              <Input label="Direcci�n opcional" value={address} onChange={setAddress} />
 
               <button
                 onClick={saveCustomer}
@@ -1002,8 +807,6 @@ export default function CotizacionesPage() {
                       const nextType = event.target.value
                       setFiscalReceiptType(nextType)
                       setNcfNumber('')
-                      setAvailableNcf(null)
-                      loadNextAvailableNcf(nextType)
                     }}
                     className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-emerald-500"
                   >
@@ -1015,41 +818,33 @@ export default function CotizacionesPage() {
                   </select>
 
                   {(() => {
-                    const fiscalCustomer = customerFiscalData(quoteToInvoice.quote_customer_id)
+                    const fiscalCustomer = quoteToInvoice.customer
 
                     return (
                       <div className="mt-4 rounded-xl border border-zinc-200 bg-white p-4">
                         <p className="text-sm font-bold text-zinc-700">Datos fiscales del cliente</p>
                         <div className="mt-2 grid grid-cols-1 gap-2 text-sm text-zinc-700">
-                          <p>Razon social: <strong>{fiscalCustomer?.company_name || '-'}</strong></p>
-                          <p>RNC/Cédula: <strong>{fiscalCustomer?.rnc || 'Falta completar'}</strong></p>
-                          <p>Teléfono: <strong>{fiscalCustomer?.phone || '-'}</strong></p>
-                          <p>Dirección: <strong>{fiscalCustomer?.address || '-'}</strong></p>
+                          <p>Razon social: <strong>{fiscalCustomer?.full_name || '-'}</strong></p>
+                          <p>RNC/C�dula: <strong>{fiscalCustomer?.document || 'Falta completar'}</strong></p>
+                          <p>Tel�fono: <strong>{fiscalCustomer?.phone || '-'}</strong></p>
+                          <p>Direcci�n: <strong>{fiscalCustomer?.address || '-'}</strong></p>
                         </div>
                       </div>
                     )
                   })()}
 
                   <label className="mt-5 block text-sm text-zinc-500">
-                    Número de comprobante fiscal / NCF
+                    N�mero de comprobante fiscal / NCF
                   </label>
                   <input
                     value={ncfNumber}
                     readOnly
-                    placeholder={loadingNcf ? 'Cargando NCF...' : 'No hay NCF disponible'}
+                    placeholder="Se asignar� al generar la factura"
                     className="mt-2 w-full rounded-xl border border-zinc-300 bg-zinc-50 px-4 py-3 font-black text-emerald-700 outline-none"
                   />
 
                   <button
-                    onClick={() => loadNextAvailableNcf()}
-                    className="mt-3 w-full rounded-xl border border-emerald-300 py-3 font-bold text-emerald-700 hover:bg-emerald-50"
-                  >
-                    Actualizar NCF disponible
-                  </button>
-
-                  <button
                     onClick={confirmInvoiceQuote}
-                    disabled={!availableNcf || loadingNcf}
                     className="mt-5 w-full rounded-xl bg-emerald-500 py-4 font-bold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     Generar factura

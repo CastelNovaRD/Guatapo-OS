@@ -3,32 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import Image from 'next/image'
-import { supabase } from '@/lib/supabase'
 import { formatDate, formatMoney } from '@/lib/format'
-
-type CreditNote = {
-  id: string
-  credit_note_number: string | null
-  fiscal_number: string | null
-  refund_method: string
-  reason: string
-  reason_other: string | null
-  notes: string | null
-  subtotal: number
-  tax_amount: number
-  total: number
-  created_at: string
-  sale_id: string
-}
-
-type Sale = {
-  id: string
-  invoice_number: string | null
-  ncf: string | null
-  fiscal_customer_name: string | null
-  fiscal_customer_rnc: string | null
-  created_at: string
-}
 
 type CreditNoteItem = {
   id: string
@@ -39,60 +14,83 @@ type CreditNoteItem = {
   total: number
   restock_quantity: number
   damaged_quantity: number
-  disposition: string
+  disposition: 'restocked' | 'damaged' | 'mixed' | null
   notes: string | null
+}
+
+type CreditNoteDocument = {
+  id: string
+  credit_note_number: string
+  fiscal_number: string | null
+  refund_method: string | null
+  reason: string | null
+  reason_other: string | null
+  notes: string | null
+  subtotal: number
+  tax_amount: number
+  total: number
+  status: string
+  created_at: string
+  sale: {
+    id: string
+    invoice_number: string | null
+    ncf: string | null
+    fiscal_customer_name: string | null
+    fiscal_customer_rnc: string | null
+    created_at: string
+  } | null
+  items: CreditNoteItem[]
 }
 
 export default function CreditNoteA4() {
   const params = useParams()
-  const creditNoteId = params.id as string
-  const [creditNote, setCreditNote] = useState<CreditNote | null>(null)
-  const [sale, setSale] = useState<Sale | null>(null)
-  const [items, setItems] = useState<CreditNoteItem[]>([])
+  const creditNoteId = typeof params.id === 'string' ? params.id : ''
+  const [creditNote, setCreditNote] = useState<CreditNoteDocument | null>(null)
   const [loading, setLoading] = useState(true)
-
-  async function loadCreditNote() {
-    setLoading(true)
-
-    const { data: noteData, error: noteError } = await supabase
-      .from('credit_notes')
-      .select('*')
-      .eq('id', creditNoteId)
-      .single()
-
-    if (noteError) {
-      alert('Error cargando nota de crédito: ' + noteError.message)
-      setLoading(false)
-      return
-    }
-
-    const note = noteData as CreditNote
-    setCreditNote(note)
-
-    const [{ data: saleData }, { data: itemRows }] = await Promise.all([
-      supabase
-        .from('sales')
-        .select('id, invoice_number, ncf, fiscal_customer_name, fiscal_customer_rnc, created_at')
-        .eq('id', note.sale_id)
-        .maybeSingle(),
-      supabase
-        .from('credit_note_items')
-        .select('id, product_name, quantity, unit_price, tax_amount, total, restock_quantity, damaged_quantity, disposition, notes')
-        .eq('credit_note_id', note.id)
-        .order('created_at'),
-    ])
-
-    setSale(saleData || null)
-    setItems(itemRows || [])
-    setLoading(false)
-  }
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    void Promise.resolve().then(loadCreditNote)
-  }, [])
+    if (!creditNoteId) {
+      const timer = window.setTimeout(() => {
+        setError('No se encontró la nota de crédito.')
+        setLoading(false)
+      }, 0)
+      return () => window.clearTimeout(timer)
+    }
+
+    const controller = new AbortController()
+
+    async function loadCreditNote() {
+      setLoading(true)
+      setError('')
+
+      try {
+        const response = await fetch(`/api/credit-notes/${encodeURIComponent(creditNoteId)}`, {
+          credentials: 'include',
+          cache: 'no-store',
+          signal: controller.signal,
+        })
+        const data = await response.json().catch(() => null)
+        if (!response.ok) {
+          throw new Error(data?.error || 'No se pudo cargar la nota de crédito.')
+        }
+        setCreditNote(data as CreditNoteDocument)
+      } catch (loadError) {
+        if (controller.signal.aborted) return
+        setError(loadError instanceof Error ? loadError.message : 'No se pudo cargar la nota de crédito.')
+      } finally {
+        if (!controller.signal.aborted) setLoading(false)
+      }
+    }
+
+    void loadCreditNote()
+    return () => controller.abort()
+  }, [creditNoteId])
 
   if (loading) return <main className="p-6">Cargando nota de crédito...</main>
-  if (!creditNote) return <main className="p-6">No se encontró la nota de crédito.</main>
+  if (!creditNote) return <main className="p-6">{error || 'No se encontró la nota de crédito.'}</main>
+
+  const sale = creditNote.sale
 
   return (
     <main className="min-h-screen bg-zinc-100 p-6 print:bg-white print:p-0">
@@ -106,11 +104,9 @@ export default function CreditNoteA4() {
         <header className="flex items-start justify-between gap-8 border-b-4 border-emerald-600 pb-6">
           <div>
             <div className="relative h-20 w-64">
-              <Image src="/logo-guatapo-transparent.png" alt="Guatapo" fill className="object-contain object-left" />
+              <Image src="/logo/logo-castelnova-os.png" alt="CastelNova OS" fill className="object-contain object-left" />
             </div>
-            <p className="mt-2 font-bold">Guatapo SRL</p>
-            <p>RNC: 131974661</p>
-            <p>Tel: 809-636-1020</p>
+            <p className="mt-2 font-bold">ShopDesk OS</p>
           </div>
 
           <div className="text-right">
@@ -127,8 +123,8 @@ export default function CreditNoteA4() {
           <Info label="RNC/Cédula cliente" value={sale?.fiscal_customer_rnc || '-'} />
           {sale?.ncf && <Info label="NCF original" value={sale.ncf} />}
           {creditNote.fiscal_number && <Info label="Número fiscal nota" value={creditNote.fiscal_number} />}
-          <Info label="Método devolución/aplicación" value={creditNote.refund_method} />
-          <Info label="Motivo" value={creditNote.reason === 'Otro' ? creditNote.reason_other || 'Otro' : creditNote.reason} />
+          {creditNote.refund_method && <Info label="Método devolución/aplicación" value={creditNote.refund_method} />}
+          <Info label="Motivo" value={creditNote.reason === 'Otro' ? creditNote.reason_other || 'Otro' : creditNote.reason || '-'} />
         </section>
 
         <table className="mt-8 w-full border-collapse text-left">
@@ -143,7 +139,7 @@ export default function CreditNoteA4() {
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => (
+            {creditNote.items.map((item) => (
               <tr key={item.id} className="border-b border-zinc-200 align-top">
                 <td className="p-3 font-semibold">{item.product_name}</td>
                 <td className="p-3 text-center">{item.quantity}</td>
@@ -173,25 +169,15 @@ export default function CreditNoteA4() {
         </section>
 
         <section className="mt-16 grid grid-cols-2 gap-12 text-center">
-          <div>
-            <div className="border-t border-black pt-2">Firma cliente</div>
-          </div>
-          <div>
-            <div className="border-t border-black pt-2">Autorizado por</div>
-          </div>
+          <div><div className="border-t border-black pt-2">Firma cliente</div></div>
+          <div><div className="border-t border-black pt-2">Autorizado por</div></div>
         </section>
       </section>
 
       <style jsx global>{`
         @media print {
-          @page {
-            size: A4;
-            margin: 10mm;
-          }
-
-          body {
-            background: white !important;
-          }
+          @page { size: A4; margin: 10mm; }
+          body { background: white !important; }
         }
       `}</style>
     </main>

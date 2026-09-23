@@ -1,4 +1,4 @@
--- Guatapo OS - Notas de credito, cambios y productos danados
+-- ShopDesk OS - Notas de credito, cambios y productos danados
 -- Ejecutar en Supabase SQL Editor. No elimina datos existentes.
 
 create table if not exists public.credit_notes (

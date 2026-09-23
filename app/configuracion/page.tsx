@@ -1,13 +1,13 @@
-﻿'use client'
+'use client'
 
 import { useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
-import { supabase } from '@/lib/supabase'
-import { getCurrentStoreId } from '@/lib/store-context'
-import { DEFAULT_HUB_CONFIG, normalizeHubConfig, type HubConfig } from '@/lib/castelnova-hub'
+import { DEFAULT_HUB_CONFIG, normalizeHubConfig, type HubConfig } from '@/lib/hub-config'
 import { APP_NAME, APP_VERSION, BUILD_DATE } from '@/lib/version'
 import {
   CheckCircle,
+  Bell,
+  ChevronRight,
   Copy,
   ExternalLink,
   Globe,
@@ -17,16 +17,19 @@ import {
   Loader2,
   MessageCircle,
   Package,
-  Percent,
   Plus,
   Save,
   Settings,
+  Shield,
   Store,
   Tags,
   Trash2,
+  Users,
+  ReceiptText,
+  Server,
 } from 'lucide-react'
 
-const SUPPORT_WHATSAPP_NUMBER = '18096361020'
+const SUPPORT_WHATSAPP_NUMBER = '18494572425'
 const CLIENT_LOGO_STORAGE_PREFIX = 'castelnova_store_logo_'
 
 type StoreSettings = {
@@ -39,8 +42,19 @@ type StoreSettings = {
   whatsapp: string | null
   rnc: string | null
   pos_featured_products_limit?: number | null
-  cooperative_pos_products_limit?: number | null
   quote_products_limit?: number | null
+}
+
+function isStoreSettings(value: unknown): value is StoreSettings {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<StoreSettings>
+  return (
+    typeof candidate.id === 'string' &&
+    typeof candidate.name === 'string' &&
+    typeof candidate.slug === 'string' &&
+    typeof candidate.system_name === 'string' &&
+    typeof candidate.active === 'boolean'
+  )
 }
 
 type SettingsForm = {
@@ -52,7 +66,6 @@ type SettingsForm = {
   rnc: string
   active: boolean
   pos_featured_products_limit: string
-  cooperative_pos_products_limit: string
   quote_products_limit: string
 }
 
@@ -62,19 +75,8 @@ type ProductCategory = {
   active: boolean
 }
 
-type ProductTypeSetting = {
-  id: string
-  value: string
-  label: string
-  active: boolean
-}
+type SettingsSection = 'general' | 'security' | 'web' | 'system' | 'users' | 'notifications' | 'billing' | 'integrations'
 
-type CooperativeCommission = {
-  id: string
-  cooperative_name: string
-  commission_percent: number
-  active: boolean
-}
 
 const emptyForm: SettingsForm = {
   name: '',
@@ -85,7 +87,6 @@ const emptyForm: SettingsForm = {
   rnc: '',
   active: true,
   pos_featured_products_limit: '10',
-  cooperative_pos_products_limit: '10',
   quote_products_limit: '10',
 }
 
@@ -111,14 +112,10 @@ export default function ConfiguracionPage() {
   const [changingPassword, setChangingPassword] = useState(false)
   const [passwordSaved, setPasswordSaved] = useState(false)
   const [categories, setCategories] = useState<ProductCategory[]>([])
-  const [productTypes, setProductTypes] = useState<ProductTypeSetting[]>([])
   const [newCategory, setNewCategory] = useState('')
-  const [newTypeLabel, setNewTypeLabel] = useState('')
-  const [cooperativeCommissions, setCooperativeCommissions] = useState<CooperativeCommission[]>([])
-  const [newCooperativeName, setNewCooperativeName] = useState('')
-  const [newCooperativePercent, setNewCooperativePercent] = useState('')
   const [clientLogo, setClientLogo] = useState('')
   const [hubConfig, setHubConfig] = useState<HubConfig>(DEFAULT_HUB_CONFIG)
+  const [activeSection, setActiveSection] = useState<SettingsSection>('general')
 
   useEffect(() => {
     void Promise.resolve().then(async () => {
@@ -132,41 +129,49 @@ export default function ConfiguracionPage() {
   }, [])
 
   const publicLinks = [
-    { label: 'Tienda normal', href: `${baseUrl}/web` },
-    { label: 'Tienda cooperativa', href: `${baseUrl}/web/cooperativa` },
+    {
+      label: 'Catálogo digital',
+      href: form.slug
+        ? `${baseUrl}/catalogo?store=${encodeURIComponent(form.slug)}`
+        : `${baseUrl}/catalogo`,
+    },
   ]
 
-  async function loadSettings() {
-    setLoading(true)
-    const storeId = await getCurrentStoreId()
+async function loadSettings() {
+  setLoading(true)
 
-    if (!storeId) {
-      setLoading(false)
-      return alert('Este usuario no tiene una tienda asignada.')
+  try {
+    const response = await fetch('/api/store-settings', {
+      method: 'GET',
+      cache: 'no-store',
+    })
+
+    const data = (await response.json().catch(() => null)) as StoreSettings | {
+  error?: string
+} | null
+
+    if (!response.ok) {
+      throw new Error(
+        data && 'error' in data && data.error
+          ? data.error
+          : 'No se pudo cargar la configuracion.'
+      )
     }
 
-    const { data, error } = await supabase
-      .from('stores')
-      .select('id, name, slug, system_name, active, phone, whatsapp, rnc, pos_featured_products_limit, cooperative_pos_products_limit, quote_products_limit')
-      .eq('id', storeId)
-      .maybeSingle()
-
-    if (error) {
-      setLoading(false)
-      return alert('Error cargando configuracion: ' + error.message)
-    }
-
-    if (!data) {
-      setLoading(false)
-      return alert('No se encontro la tienda asignada.')
+    if (!isStoreSettings(data)) {
+      throw new Error('No se encontro la tienda asignada.')
     }
 
     setStore(data)
+
     setClientLogo(
       typeof window === 'undefined'
         ? ''
-        : window.localStorage.getItem(`${CLIENT_LOGO_STORAGE_PREFIX}${data.id}`) || ''
+        : window.localStorage.getItem(
+            `${CLIENT_LOGO_STORAGE_PREFIX}${data.id}`
+          ) || ''
     )
+
     setForm({
       name: data.name || '',
       slug: data.slug || '',
@@ -175,40 +180,37 @@ export default function ConfiguracionPage() {
       whatsapp: data.whatsapp || '',
       rnc: data.rnc || '',
       active: data.active !== false,
-      pos_featured_products_limit: String([5, 10, 20, 50].includes(Number(data.pos_featured_products_limit)) ? data.pos_featured_products_limit : 10),
-      cooperative_pos_products_limit: String([5, 10, 20, 50].includes(Number(data.cooperative_pos_products_limit)) ? data.cooperative_pos_products_limit : 10),
-      quote_products_limit: String([5, 10, 20, 50].includes(Number(data.quote_products_limit)) ? data.quote_products_limit : 10),
+      pos_featured_products_limit: String(
+        [5, 10, 20, 50].includes(
+          Number(data.pos_featured_products_limit)
+        )
+          ? data.pos_featured_products_limit
+          : 10
+      ),
+      quote_products_limit: String(
+        [5, 10, 20, 50].includes(
+          Number(data.quote_products_limit)
+        )
+          ? data.quote_products_limit
+          : 10
+      ),
     })
-    await loadCatalogSettings(data.id)
+
+    await loadCatalogSettings()
+  } catch (error) {
+    alert(
+      'Error cargando configuracion: ' +
+        (error instanceof Error ? error.message : 'Error desconocido.')
+    )
+  } finally {
     setLoading(false)
   }
+}
 
-  async function loadCatalogSettings(storeId: string) {
-    const [
-      { data: categoriesData },
-      { data: productTypesData },
-      { data: cooperativeCommissionsData },
-    ] = await Promise.all([
-      supabase
-        .from('categories')
-        .select('id, name, active')
-        .eq('store_id', storeId)
-        .order('name'),
-      supabase
-        .from('product_types')
-        .select('id, value, label, active')
-        .eq('store_id', storeId)
-        .order('label'),
-      supabase
-        .from('cooperative_commissions')
-        .select('id, cooperative_name, commission_percent, active')
-        .eq('store_id', storeId)
-        .order('cooperative_name'),
-    ])
+  async function loadCatalogSettings() {
+    const categoriesData = await fetch('/api/categories').then(async (response) => response.ok ? response.json() : [])
 
     setCategories(categoriesData || [])
-    setProductTypes(productTypesData || [])
-    setCooperativeCommissions(cooperativeCommissionsData || [])
   }
 
   async function loadHubConfig() {
@@ -226,26 +228,53 @@ export default function ConfiguracionPage() {
   }
 
   async function saveSettings(e: React.FormEvent) {
-    e.preventDefault()
-    if (!store) return
-    if (!form.name.trim()) return alert('Escribe el nombre de la tienda.')
-    if (!form.system_name.trim()) return alert('Escribe el nombre del sistema.')
+  e.preventDefault()
 
-    const slug = normalizeSlug(form.slug || form.name)
-    if (!slug) return alert('El slug no es valido.')
-    const posFeaturedLimit = Number(form.pos_featured_products_limit || 10)
-    const cooperativePosLimit = Number(form.cooperative_pos_products_limit || 10)
-    const quoteProductsLimit = Number(form.quote_products_limit || 10)
-    if (![5, 10, 20, 50].includes(posFeaturedLimit)) return alert('Selecciona una cantidad valida para productos destacados del POS.')
-    if (![5, 10, 20, 50].includes(cooperativePosLimit)) return alert('Selecciona una cantidad valida para productos del POS cooperativa.')
-    if (![5, 10, 20, 50].includes(quoteProductsLimit)) return alert('Selecciona una cantidad valida para productos de cotizaciones.')
+  if (!store) return
+  if (!form.name.trim()) {
+    return alert('Escribe el nombre de la tienda.')
+  }
 
-    setSaving(true)
-    setSaved(false)
+  if (!form.system_name.trim()) {
+    return alert('Escribe el nombre del sistema.')
+  }
 
-    const { error } = await supabase
-      .from('stores')
-      .update({
+  const slug = normalizeSlug(form.slug || form.name)
+
+  if (!slug) {
+    return alert('El slug no es valido.')
+  }
+
+  const posFeaturedLimit = Number(
+    form.pos_featured_products_limit || 10
+  )
+
+  const quoteProductsLimit = Number(
+    form.quote_products_limit || 10
+  )
+
+  if (![5, 10, 20, 50].includes(posFeaturedLimit)) {
+    return alert(
+      'Selecciona una cantidad valida para productos destacados del POS.'
+    )
+  }
+
+  if (![5, 10, 20, 50].includes(quoteProductsLimit)) {
+    return alert(
+      'Selecciona una cantidad valida para productos de cotizaciones.'
+    )
+  }
+
+  setSaving(true)
+  setSaved(false)
+
+  try {
+    const response = await fetch('/api/store-settings', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
         name: form.name.trim(),
         slug,
         system_name: form.system_name.trim(),
@@ -254,38 +283,81 @@ export default function ConfiguracionPage() {
         rnc: form.rnc.trim() || null,
         active: form.active,
         pos_featured_products_limit: posFeaturedLimit,
-        cooperative_pos_products_limit: cooperativePosLimit,
         quote_products_limit: quoteProductsLimit,
-      })
-      .eq('id', store.id)
+      }),
+    })
 
-    if (error) {
-      setSaving(false)
-      return alert('Error guardando configuracion: ' + error.message)
+    const data = (await response.json().catch(() => null)) as
+      | StoreSettings
+      | { error?: string }
+      | null
+
+    if (!response.ok) {
+      const message =
+        data &&
+        typeof data === 'object' &&
+        'error' in data &&
+        typeof data.error === 'string'
+          ? data.error
+          : 'No se pudo guardar la configuracion.'
+
+      throw new Error(message)
     }
 
-    setForm((current) => ({ ...current, slug }))
-    setStore((current) =>
-      current
-        ? {
-            ...current,
-            name: form.name.trim(),
-            slug,
-            system_name: form.system_name.trim(),
-            phone: form.phone.trim() || null,
-            whatsapp: form.whatsapp.trim() || null,
-            rnc: form.rnc.trim() || null,
-            active: form.active,
-            pos_featured_products_limit: posFeaturedLimit,
-            cooperative_pos_products_limit: cooperativePosLimit,
-            quote_products_limit: quoteProductsLimit,
-          }
-        : current
-    )
-    setSaving(false)
+    if (
+      !data ||
+      typeof data !== 'object' ||
+      !('id' in data)
+    ) {
+      throw new Error(
+        'La API no devolvio la configuracion actualizada.'
+      )
+    }
+
+    const updatedStore = data as StoreSettings
+
+    setStore(updatedStore)
+
+    setForm({
+      name: updatedStore.name || '',
+      slug: updatedStore.slug || '',
+      system_name: updatedStore.system_name || '',
+      phone: updatedStore.phone || '',
+      whatsapp: updatedStore.whatsapp || '',
+      rnc: updatedStore.rnc || '',
+      active: updatedStore.active !== false,
+      pos_featured_products_limit: String(
+        [5, 10, 20, 50].includes(
+          Number(updatedStore.pos_featured_products_limit)
+        )
+          ? updatedStore.pos_featured_products_limit
+          : 10
+      ),
+      quote_products_limit: String(
+        [5, 10, 20, 50].includes(
+          Number(updatedStore.quote_products_limit)
+        )
+          ? updatedStore.quote_products_limit
+          : 10
+      ),
+    })
+
     setSaved(true)
-    window.dispatchEvent(new Event('guatapo:settings-updated'))
+
+    window.dispatchEvent(
+      new Event('shopdesk:settings-updated')
+    )
+  } catch (error) {
+    alert(
+      'Error guardando configuracion: ' +
+        (error instanceof Error
+          ? error.message
+          : 'Error desconocido.')
+    )
+  } finally {
+    setSaving(false)
   }
+}
 
   async function copyLink(link: string) {
     await navigator.clipboard.writeText(link)
@@ -293,34 +365,71 @@ export default function ConfiguracionPage() {
     window.setTimeout(() => setCopyMessage(''), 1600)
   }
 
-  async function changePassword(e?: React.FormEvent | React.MouseEvent) {
-    e?.preventDefault()
-    setPasswordSaved(false)
+ async function changePassword(e?: React.FormEvent | React.MouseEvent) {
+  e?.preventDefault()
+  setPasswordSaved(false)
 
-    if (newPassword.length < 6) {
-      return alert('La contrasena debe tener al menos 6 caracteres.')
-    }
+  if (newPassword.length < 10) {
+    return alert('La contraseña debe tener al menos 10 caracteres.')
+  }
 
-    if (newPassword !== confirmPassword) {
-      return alert('Las contrasenas no coinciden.')
-    }
+  if (
+    !/[a-z]/.test(newPassword) ||
+    !/[A-Z]/.test(newPassword) ||
+    !/[0-9]/.test(newPassword)
+  ) {
+    return alert(
+      'La contraseña debe incluir mayúscula, minúscula y un número.'
+    )
+  }
 
-    setChangingPassword(true)
+  if (newPassword !== confirmPassword) {
+    return alert('Las contraseñas no coinciden.')
+  }
 
-    const { error } = await supabase.auth.updateUser({
-      password: newPassword,
+  setChangingPassword(true)
+
+  try {
+    const response = await fetch('/api/auth/password', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        newPassword,
+      }),
     })
 
-    if (error) {
-      setChangingPassword(false)
-      return alert('Error cambiando contrasena: ' + error.message)
+    const data = (await response.json().catch(() => null)) as
+      | { ok?: boolean; error?: string }
+      | null
+
+    if (!response.ok) {
+      throw new Error(
+        data?.error || 'No se pudo cambiar la contraseña.'
+      )
     }
 
     setNewPassword('')
     setConfirmPassword('')
-    setChangingPassword(false)
     setPasswordSaved(true)
+
+    alert(
+      'Contraseña actualizada correctamente. Inicia sesión nuevamente.'
+    )
+
+    window.location.href = '/login'
+  } catch (error) {
+    alert(
+      'Error cambiando contraseña: ' +
+        (error instanceof Error
+          ? error.message
+          : 'Error desconocido.')
+    )
+  } finally {
+    setChangingPassword(false)
   }
+}
 
   function openSupport() {
     const message = [
@@ -352,7 +461,7 @@ export default function ConfiguracionPage() {
       const result = String(reader.result || '')
       window.localStorage.setItem(`${CLIENT_LOGO_STORAGE_PREFIX}${store.id}`, result)
       setClientLogo(result)
-      window.dispatchEvent(new Event('guatapo:store-logo-updated'))
+      window.dispatchEvent(new Event('shopdesk:store-logo-updated'))
     }
     reader.readAsDataURL(file)
   }
@@ -361,7 +470,7 @@ export default function ConfiguracionPage() {
     if (!store) return
     window.localStorage.removeItem(`${CLIENT_LOGO_STORAGE_PREFIX}${store.id}`)
     setClientLogo('')
-    window.dispatchEvent(new Event('guatapo:store-logo-updated'))
+    window.dispatchEvent(new Event('shopdesk:store-logo-updated'))
   }
 
   async function addCategory(e: React.FormEvent) {
@@ -370,132 +479,19 @@ export default function ConfiguracionPage() {
     const name = newCategory.trim()
     if (!name) return alert('Escribe el nombre de la categoria.')
 
-    const { error } = await supabase.from('categories').upsert(
-      {
-        store_id: store.id,
-        name,
-        active: true,
-      },
-      { onConflict: 'store_id,name' }
-    )
-
-    if (error) return alert('Error guardando categoria: ' + error.message)
+    const response = await fetch('/api/categories', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) })
+    if (!response.ok) return alert('Error guardando categoria: ' + ((await response.json() as { error?: string }).error || 'Error desconocido'))
 
     setNewCategory('')
-    await loadCatalogSettings(store.id)
+    await loadCatalogSettings()
   }
 
   async function toggleCategory(category: ProductCategory) {
     if (!store) return
 
-    const { error } = await supabase
-      .from('categories')
-      .update({ active: !category.active })
-      .eq('id', category.id)
-      .eq('store_id', store.id)
-
-    if (error) return alert('Error actualizando categoria: ' + error.message)
-    await loadCatalogSettings(store.id)
-  }
-
-  async function addProductType(e: React.FormEvent) {
-    e.preventDefault()
-    if (!store) return
-    const label = newTypeLabel.trim()
-    if (!label) return alert('Escribe el nombre del tipo.')
-
-    const value = normalizeSlug(label).replace(/-/g, '_')
-    if (!value) return alert('Ese tipo no es valido.')
-
-    const { error } = await supabase.from('product_types').upsert(
-      {
-        store_id: store.id,
-        value,
-        label,
-        active: true,
-      },
-      { onConflict: 'store_id,value' }
-    )
-
-    if (error) return alert('Error guardando tipo: ' + error.message)
-
-    setNewTypeLabel('')
-    await loadCatalogSettings(store.id)
-  }
-
-  async function toggleProductType(type: ProductTypeSetting) {
-    if (!store) return
-
-    const { error } = await supabase
-      .from('product_types')
-      .update({ active: !type.active })
-      .eq('id', type.id)
-      .eq('store_id', store.id)
-
-    if (error) return alert('Error actualizando tipo: ' + error.message)
-    await loadCatalogSettings(store.id)
-  }
-
-  async function addCooperativeCommission(e: React.FormEvent) {
-    e.preventDefault()
-    if (!store) return
-
-    const cooperativeName = newCooperativeName.trim().toUpperCase()
-    const commissionPercent = Number(newCooperativePercent || 0)
-
-    if (!cooperativeName) return alert('Escribe el nombre de la cooperativa.')
-    if (Number.isNaN(commissionPercent) || commissionPercent < 0 || commissionPercent > 100) {
-      return alert('El porcentaje debe estar entre 0 y 100.')
-    }
-
-    const { error } = await supabase.from('cooperative_commissions').upsert(
-      {
-        store_id: store.id,
-        cooperative_name: cooperativeName,
-        commission_percent: commissionPercent,
-        active: true,
-      },
-      { onConflict: 'store_id,cooperative_name' }
-    )
-
-    if (error) return alert('Error guardando comision: ' + error.message)
-
-    setNewCooperativeName('')
-    setNewCooperativePercent('')
-    await loadCatalogSettings(store.id)
-  }
-
-  async function updateCooperativeCommission(
-    commission: CooperativeCommission,
-    commissionPercent: number
-  ) {
-    if (!store) return
-
-    if (Number.isNaN(commissionPercent) || commissionPercent < 0 || commissionPercent > 100) {
-      return alert('El porcentaje debe estar entre 0 y 100.')
-    }
-
-    const { error } = await supabase
-      .from('cooperative_commissions')
-      .update({ commission_percent: commissionPercent })
-      .eq('id', commission.id)
-      .eq('store_id', store.id)
-
-    if (error) return alert('Error actualizando comision: ' + error.message)
-    await loadCatalogSettings(store.id)
-  }
-
-  async function toggleCooperativeCommission(commission: CooperativeCommission) {
-    if (!store) return
-
-    const { error } = await supabase
-      .from('cooperative_commissions')
-      .update({ active: !commission.active })
-      .eq('id', commission.id)
-      .eq('store_id', store.id)
-
-    if (error) return alert('Error actualizando cooperativa: ' + error.message)
-    await loadCatalogSettings(store.id)
+    const response = await fetch(`/api/categories/${category.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ active: !category.active }) })
+    if (!response.ok) return alert('Error actualizando categoria: ' + ((await response.json() as { error?: string }).error || 'Error desconocido'))
+    await loadCatalogSettings()
   }
 
   if (loading) {
@@ -509,17 +505,31 @@ export default function ConfiguracionPage() {
     )
   }
 
+  const settingsSections: Array<{
+    id: SettingsSection
+    label: string
+    description: string
+    icon: React.ReactNode
+  }> = [
+    { id: 'general', label: 'General', description: 'Información básica y tienda', icon: <Settings size={20} /> },
+    { id: 'security', label: 'Seguridad', description: 'Contraseña, sesiones y accesos', icon: <Shield size={20} /> },
+    { id: 'web', label: 'Web', description: 'Tienda online y configuración web', icon: <Globe size={20} /> },
+    { id: 'system', label: 'Sistema', description: 'Configuración propia de ShopDesk OS', icon: <Server size={20} /> },
+    { id: 'users', label: 'Usuarios', description: 'Gestión relacionada con accesos', icon: <Users size={20} /> },
+    { id: 'notifications', label: 'Notificaciones', description: 'Avisos y comunicaciones', icon: <Bell size={20} /> },
+    { id: 'billing', label: 'Facturación', description: 'Impuestos y comprobantes', icon: <ReceiptText size={20} /> },
+    { id: 'integrations', label: 'Integraciones', description: 'CastelNova Hub y conexiones', icon: <Package size={20} /> },
+  ]
+
   return (
     <AppShell>
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-3 text-3xl font-bold text-zinc-950">
-            <Settings className="text-emerald-600" size={30} />
+            <Settings className="text-castelnova-600" size={30} />
             Configuracion
           </h1>
-          <p className="mt-1 text-zinc-600">
-            Ajustes generales del sistema y enlaces publicos de la tienda.
-          </p>
+          <p className="mt-1 text-zinc-600">Administra las opciones del sistema, seguridad, web y más.</p>
         </div>
 
         <div
@@ -533,26 +543,49 @@ export default function ConfiguracionPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <form onSubmit={saveSettings} className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[280px_minmax(0,1fr)]">
+        <nav className="h-fit rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm xl:sticky xl:top-28">
+          {settingsSections.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              onClick={() => setActiveSection(section.id)}
+              className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition ${activeSection === section.id ? 'bg-castelnova-50 text-castelnova-700' : 'text-zinc-700 hover:bg-zinc-50'}`}
+            >
+              <span className={activeSection === section.id ? 'text-castelnova-600' : 'text-zinc-500'}>{section.icon}</span>
+              <span className="min-w-0 flex-1"><span className="block font-bold">{section.label}</span><span className="block text-xs text-zinc-500">{section.description}</span></span>
+              <ChevronRight size={18} className="shrink-0" />
+            </button>
+          ))}
+        </nav>
+
+        <div className="min-w-0">
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <form onSubmit={saveSettings} className={`${activeSection === 'general' || activeSection === 'security' || activeSection === 'system' ? 'block' : 'hidden'} rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm`}>
           <div className="mb-5 flex items-center gap-2">
-            <Store className="text-emerald-600" size={22} />
-            <h2 className="text-xl font-bold">Datos de la tienda</h2>
+            <Store className="text-castelnova-600" size={22} />
+            <h2 className="text-xl font-bold">
+              {activeSection === 'security'
+                ? 'Seguridad'
+                : activeSection === 'system'
+                  ? 'Sistema'
+                  : 'Datos de la tienda'}
+            </h2>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className={activeSection === 'general' ? 'grid grid-cols-1 gap-4 md:grid-cols-2' : 'hidden'}>
             <Input
               label="Nombre de la empresa"
               value={form.name}
               onChange={(value) => updateForm('name', value)}
-              placeholder="Guatapo SRL"
+              placeholder="Mi Empresa SRL"
             />
 
             <Input
               label="Nombre del sistema"
               value={form.system_name}
               onChange={(value) => updateForm('system_name', value)}
-              placeholder="Guatapo OS"
+              placeholder="ShopDesk OS"
             />
 
             <Input
@@ -560,7 +593,7 @@ export default function ConfiguracionPage() {
               value={form.slug}
               onChange={(value) => updateForm('slug', value)}
               onBlur={() => updateForm('slug', normalizeSlug(form.slug || form.name))}
-              placeholder="guatapo"
+              placeholder="mi-tienda"
             />
 
             <Input
@@ -579,9 +612,12 @@ export default function ConfiguracionPage() {
 
             <Input
               label="WhatsApp"
+              name="shopdesk-business-whatsapp"
+              type="tel"
+              autoComplete="tel"
               value={form.whatsapp}
               onChange={(value) => updateForm('whatsapp', value)}
-              placeholder="18096361020"
+              placeholder="809-000-0000"
             />
 
             <div className="md:col-span-2">
@@ -590,7 +626,7 @@ export default function ConfiguracionPage() {
                   type="checkbox"
                   checked={form.active}
                   onChange={(e) => updateForm('active', e.target.checked)}
-                  className="h-5 w-5 accent-emerald-600"
+                  className="h-5 w-5 accent-castelnova-600"
                 />
                 <span>
                   <span className="block font-bold text-zinc-950">Tienda activa</span>
@@ -601,7 +637,9 @@ export default function ConfiguracionPage() {
               </label>
             </div>
 
-            <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5 md:col-span-2">
+          </div>
+
+            <div className={activeSection === 'system' ? 'rounded-2xl border border-zinc-200 bg-zinc-50 p-5' : 'hidden'}>
               <div className="mb-4">
                 <h3 className="text-lg font-bold text-zinc-950">Configuracion de productos visibles</h3>
                 <p className="text-sm leading-relaxed text-zinc-600">
@@ -609,16 +647,11 @@ export default function ConfiguracionPage() {
                 </p>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-3">
+              <div className="grid gap-4 md:grid-cols-2">
                 <LimitSelect
                   label="POS de venta"
                   value={form.pos_featured_products_limit}
                   onChange={(value) => updateForm('pos_featured_products_limit', value)}
-                />
-                <LimitSelect
-                  label="POS Cooperativa"
-                  value={form.cooperative_pos_products_limit}
-                  onChange={(value) => updateForm('cooperative_pos_products_limit', value)}
                 />
                 <LimitSelect
                   label="Cotizaciones"
@@ -628,9 +661,9 @@ export default function ConfiguracionPage() {
               </div>
             </div>
 
-            <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5 md:col-span-2">
+            <div className={activeSection === 'general' ? 'mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-5' : 'hidden'}>
               <div className="mb-4 flex items-center gap-2">
-                <ImageIcon className="text-emerald-600" size={22} />
+                <ImageIcon className="text-castelnova-600" size={22} />
                 <h3 className="text-lg font-bold">Logo del cliente</h3>
               </div>
 
@@ -652,7 +685,7 @@ export default function ConfiguracionPage() {
                     Este logo aparece en la esquina superior derecha del sistema.
                   </p>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white hover:bg-emerald-700">
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-castelnova-600 px-4 py-3 text-sm font-bold text-white hover:bg-castelnova-700">
                       <ImageIcon size={16} />
                       Subir logo
                       <input
@@ -678,9 +711,9 @@ export default function ConfiguracionPage() {
               </div>
             </div>
 
-            <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-5 md:col-span-2">
+            <div className={activeSection === 'security' ? 'mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-5' : 'hidden'}>
               <div className="mb-4 flex items-center gap-2">
-                <KeyRound className="text-emerald-600" size={22} />
+                <KeyRound className="text-castelnova-600" size={22} />
                 <h3 className="text-lg font-bold">Seguridad</h3>
               </div>
 
@@ -718,13 +751,11 @@ export default function ConfiguracionPage() {
                 </p>
               )}
             </div>
-          </div>
-
-          <div className="mt-6 flex flex-wrap items-center gap-3">
+          <div className={`mt-6 flex flex-wrap items-center gap-3 ${activeSection === 'general' || activeSection === 'system' ? '' : 'hidden'}`}>
             <button
               type="submit"
               disabled={saving}
-              className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 font-bold text-white hover:bg-emerald-700 disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-xl bg-castelnova-600 px-5 py-3 font-bold text-white hover:bg-castelnova-700 disabled:opacity-60"
             >
               {saving ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />}
               {saving ? 'Guardando...' : 'Guardar configuracion'}
@@ -739,10 +770,10 @@ export default function ConfiguracionPage() {
           </div>
         </form>
 
-        <section className="grid grid-cols-1 gap-6">
+        <section className={activeSection === 'system' ? 'grid grid-cols-1 gap-6' : 'hidden'}>
           <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
             <div className="mb-4 flex items-center gap-2">
-              <Tags className="text-emerald-600" size={22} />
+              <Tags className="text-castelnova-600" size={22} />
               <h2 className="text-xl font-bold">Categorias</h2>
             </div>
 
@@ -751,11 +782,11 @@ export default function ConfiguracionPage() {
                 value={newCategory}
                 onChange={(e) => setNewCategory(e.target.value)}
                 placeholder="Ej: Celulares"
-                className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
+                className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600"
               />
               <button
                 type="submit"
-                className="inline-flex items-center justify-center rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700"
+                className="inline-flex items-center justify-center rounded-xl bg-castelnova-600 px-4 text-white hover:bg-castelnova-700"
                 aria-label="Agregar categoria"
               >
                 <Plus size={20} />
@@ -780,105 +811,12 @@ export default function ConfiguracionPage() {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
-            <div className="mb-4 flex items-center gap-2">
-              <Package className="text-emerald-600" size={22} />
-              <h2 className="text-xl font-bold">Tipos de producto</h2>
-            </div>
-
-            <form onSubmit={addProductType} className="flex gap-2">
-              <input
-                value={newTypeLabel}
-                onChange={(e) => setNewTypeLabel(e.target.value)}
-                placeholder="Ej: Adaptador"
-                className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
-              />
-              <button
-                type="submit"
-                className="inline-flex items-center justify-center rounded-xl bg-emerald-600 px-4 text-white hover:bg-emerald-700"
-                aria-label="Agregar tipo"
-              >
-                <Plus size={20} />
-              </button>
-            </form>
-
-            <div className="mt-4 space-y-2">
-              {productTypes.length === 0 ? (
-                <p className="rounded-xl bg-zinc-50 p-3 text-sm text-zinc-500">
-                  No hay tipos registrados.
-                </p>
-              ) : (
-                productTypes.map((type) => (
-                  <CatalogRow
-                    key={type.id}
-                    label={type.label}
-                    active={type.active}
-                    onToggle={() => toggleProductType(type)}
-                  />
-                ))
-              )}
-            </div>
-          </div>
-        </section>
-
-        <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm xl:col-span-2">
-          <div className="mb-4 flex items-center gap-2">
-            <Percent className="text-emerald-600" size={22} />
-            <h2 className="text-xl font-bold">Comisiones cooperativas</h2>
-          </div>
-
-          <p className="mb-4 text-sm text-zinc-600">
-            Define el porcentaje que cada cooperativa descuenta de la venta. El POS cooperativo lo resta para calcular la ganancia neta.
-          </p>
-
-          <form onSubmit={addCooperativeCommission} className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_180px_auto]">
-            <input
-              value={newCooperativeName}
-              onChange={(e) => setNewCooperativeName(e.target.value)}
-              placeholder="Ej: COOPSEMA"
-              className="rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
-            />
-            <input
-              type="number"
-              min="0"
-              max="100"
-              step="0.01"
-              value={newCooperativePercent}
-              onChange={(e) => setNewCooperativePercent(e.target.value)}
-              placeholder="% comision"
-              className="rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
-            />
-            <button
-              type="submit"
-              className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 font-bold text-white hover:bg-emerald-700"
-            >
-              <Plus size={18} />
-              Agregar
-            </button>
-          </form>
-
-          <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
-            {cooperativeCommissions.length === 0 ? (
-              <p className="rounded-xl bg-zinc-50 p-3 text-sm text-zinc-500 lg:col-span-2">
-                No hay comisiones registradas.
-              </p>
-            ) : (
-              cooperativeCommissions.map((commission) => (
-                <CooperativeCommissionRow
-                  key={commission.id}
-                  commission={commission}
-                  onSave={(value) => updateCooperativeCommission(commission, value)}
-                  onToggle={() => toggleCooperativeCommission(commission)}
-                />
-              ))
-            )}
-          </div>
         </section>
 
         <aside className="space-y-6">
-          <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-6 shadow-sm">
+          <section className={activeSection === 'integrations' ? 'rounded-2xl border border-castelnova-200 bg-castelnova-50 p-6 shadow-sm' : 'hidden'}>
             <div className="mb-4 flex items-center gap-2">
-              <Headphones className="text-emerald-700" size={22} />
+              <Headphones className="text-castelnova-700" size={22} />
               <h2 className="text-xl font-bold text-zinc-950">Soporte tecnico</h2>
             </div>
 
@@ -890,16 +828,16 @@ export default function ConfiguracionPage() {
             <button
               type="button"
               onClick={openSupport}
-              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 font-bold text-white hover:bg-emerald-700"
+              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-castelnova-600 px-4 py-3 font-bold text-white hover:bg-castelnova-700"
             >
               <MessageCircle size={18} />
               Soporte por WhatsApp
             </button>
           </section>
 
-          <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+          <section className={activeSection === 'web' ? 'rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm' : 'hidden'}>
             <div className="mb-4 flex items-center gap-2">
-              <Globe className="text-emerald-600" size={22} />
+              <Globe className="text-castelnova-600" size={22} />
               <h2 className="text-xl font-bold">Paginas web</h2>
             </div>
 
@@ -938,7 +876,9 @@ export default function ConfiguracionPage() {
             )}
           </section>
 
-          <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+          <CatalogBrandingPanel visible={activeSection === 'web'} />
+
+          <section className={activeSection === 'system' || activeSection === 'integrations' ? 'rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm' : 'hidden'}>
             <h2 className="text-xl font-bold">Acerca del sistema</h2>
             <div className="mt-4 space-y-3 text-sm">
               <SummaryRow label="Producto" value={APP_NAME} />
@@ -961,6 +901,18 @@ export default function ConfiguracionPage() {
             </div>
           </section>
         </aside>
+        {(activeSection === 'users' || activeSection === 'notifications' || activeSection === 'billing') && (
+          <section className="rounded-2xl border border-zinc-200 bg-white p-8 shadow-sm xl:col-span-2">
+            <h2 className="text-xl font-bold text-zinc-950">
+              {activeSection === 'users' ? 'Usuarios' : activeSection === 'notifications' ? 'Notificaciones' : 'Facturación'}
+            </h2>
+            <p className="mt-2 max-w-2xl text-zinc-600">
+              Esta configuración estará disponible cuando el módulo correspondiente esté habilitado. No hay opciones adicionales configurables en esta instalación todavía.
+            </p>
+          </section>
+        )}
+        </div>
+      </div>
       </div>
     </AppShell>
   )
@@ -972,22 +924,34 @@ function Input({
   onChange,
   onBlur,
   placeholder,
+  name,
+  type = 'text',
+  autoComplete = 'off',
 }: {
   label: string
   value: string
   onChange: (value: string) => void
   onBlur?: () => void
   placeholder?: string
+  name?: string
+  type?: React.HTMLInputTypeAttribute
+  autoComplete?: string
 }) {
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-zinc-600">{label}</label>
+      <label className="mb-2 block text-sm font-medium text-zinc-600">
+        {label}
+      </label>
+
       <input
+        type={type}
+        name={name}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onBlur={onBlur}
         placeholder={placeholder}
-        className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
+        autoComplete={autoComplete}
+        className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600"
       />
     </div>
   )
@@ -1009,7 +973,7 @@ function PasswordInput({
         type="password"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
+        className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600"
       />
     </div>
   )
@@ -1065,7 +1029,7 @@ function LimitSelect({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 font-semibold outline-none focus:border-emerald-500"
+        className="w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 font-semibold outline-none focus:border-castelnova-600"
       >
         {[5, 10, 20, 50].map((limit) => (
           <option key={limit} value={String(limit)}>{limit} productos</option>
@@ -1074,68 +1038,97 @@ function LimitSelect({
     </label>
   )
 }
-function CooperativeCommissionRow({
-  commission,
-  onSave,
-  onToggle,
-}: {
-  commission: CooperativeCommission
-  onSave: (value: number) => void
-  onToggle: () => void
-}) {
-  const [value, setValue] = useState(String(Number(commission.commission_percent || 0)))
+
+function CatalogBrandingPanel({ visible }: { visible: boolean }) {
+  const [branding, setBranding] = useState({
+    publicName: '', primaryColor: '#0f766e', accentColor: '#d6af82',
+    heroTitle: 'Descubre tu esencia',
+    heroSubtitle: 'Encuentra la fragancia perfecta para ti.',
+    logoUrl: '', heroBannerUrl: '', whatsapp: '',
+  })
+  const [loaded, setLoaded] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [uploadingAsset, setUploadingAsset] = useState<'logo' | 'banner' | null>(null)
+  const [preview, setPreview] = useState<{ logo: string; banner: string }>({ logo: '', banner: '' })
 
   useEffect(() => {
-    setValue(String(Number(commission.commission_percent || 0)))
-  }, [commission.commission_percent])
+    if (!visible || loaded) return
+    void fetch('/api/store-settings/catalog-branding', { cache: 'no-store' })
+      .then(async (response) => response.ok ? response.json() : {})
+      .then((value) => setBranding((current) => ({ ...current, ...value })))
+      .finally(() => setLoaded(true))
+  }, [loaded, visible])
 
-  const nameClass = commission.active ? 'text-zinc-950' : 'text-zinc-400'
-  const statusClass = commission.active ? 'text-emerald-600' : 'text-zinc-400'
-  const buttonClass = commission.active
-    ? 'border-red-200 bg-white text-red-600 hover:bg-red-50'
-    : 'border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50'
+  async function save() {
+    setSaving(true)
+    try {
+      const response = await fetch('/api/store-settings/catalog-branding', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(branding),
+      })
+      if (!response.ok) throw new Error()
+      alert('Branding del catálogo guardado.')
+    } catch {
+      alert('No se pudo guardar el branding del catálogo.')
+    } finally {
+      setSaving(false)
+    }
+  }
 
-  return (
-    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className={`truncate font-bold ${nameClass}`}>{commission.cooperative_name}</p>
-          <p className={`text-xs ${statusClass}`}>
-            {commission.active ? 'Activa' : 'Inactiva'}
-          </p>
-        </div>
+  async function uploadAsset(kind: 'logo' | 'banner', file: File | null) {
+    if (!file) return
+    const localPreview = URL.createObjectURL(file)
+    setPreview((current) => ({ ...current, [kind]: localPreview }))
+    setUploadingAsset(kind)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const response = await fetch(`/api/store-settings/catalog-branding/assets/${kind}`, { method: 'POST', body: formData })
+      const body = await response.json().catch(() => null) as { url?: string; error?: string } | null
+      if (!response.ok || !body?.url) throw new Error(body?.error || 'No se pudo subir la imagen.')
+      setBranding((current) => ({ ...current, [kind === 'logo' ? 'logoUrl' : 'heroBannerUrl']: body.url! }))
+      setPreview((current) => ({ ...current, [kind]: body.url! }))
+    } catch (error) {
+      setPreview((current) => ({ ...current, [kind]: '' }))
+      alert(error instanceof Error ? error.message : 'No se pudo subir la imagen.')
+    } finally {
+      setUploadingAsset(null)
+      URL.revokeObjectURL(localPreview)
+    }
+  }
 
-        <button
-          type="button"
-          onClick={onToggle}
-          className={`rounded-lg border px-3 py-2 text-sm font-bold ${buttonClass}`}
-        >
-          {commission.active ? <Trash2 size={16} /> : 'Activar'}
-        </button>
-      </div>
+  async function removeAsset(kind: 'logo' | 'banner') {
+    if (!confirm(`¿Eliminar ${kind === 'logo' ? 'el logo' : 'el banner'} del catálogo?`)) return
+    setUploadingAsset(kind)
+    try {
+      const response = await fetch(`/api/store-settings/catalog-branding/assets/${kind}`, { method: 'DELETE' })
+      if (!response.ok) throw new Error()
+      setBranding((current) => ({ ...current, [kind === 'logo' ? 'logoUrl' : 'heroBannerUrl']: '' }))
+      setPreview((current) => ({ ...current, [kind]: '' }))
+    } catch {
+      alert('No se pudo eliminar la imagen.')
+    } finally {
+      setUploadingAsset(null)
+    }
+  }
 
-      <div className="mt-3 flex gap-2">
-        <input
-          type="number"
-          min="0"
-          max="100"
-          step="0.01"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
-        />
-        <button
-          type="button"
-          onClick={() => onSave(Number(value || 0))}
-          className="rounded-xl bg-zinc-950 px-4 py-3 font-bold text-white hover:bg-zinc-800"
-        >
-          Guardar %
-        </button>
-      </div>
+  return <section className={visible ? 'rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm' : 'hidden'}>
+    <div className="mb-5"><h2 className="text-xl font-bold">Branding del catálogo digital</h2><p className="mt-1 text-sm text-zinc-600">Personaliza la identidad pública de tu catálogo sin modificar código.</p></div>
+    <div className="grid gap-4 md:grid-cols-2">
+      <Input label="Nombre público" value={branding.publicName} onChange={(value) => setBranding((current) => ({ ...current, publicName: value }))} placeholder="Nombre de tu negocio" />
+      <Input label="WhatsApp del catálogo" value={branding.whatsapp} onChange={(value) => setBranding((current) => ({ ...current, whatsapp: value }))} placeholder="8095551234" />
+      <CatalogBrandingAssetInput label="Logo del catálogo" kind="logo" value={preview.logo || branding.logoUrl} uploading={uploadingAsset === 'logo'} onFile={(file) => void uploadAsset('logo', file)} onRemove={() => void removeAsset('logo')} />
+      <Input label="Título principal" value={branding.heroTitle} onChange={(value) => setBranding((current) => ({ ...current, heroTitle: value }))} placeholder="Descubre tu esencia" />
+      <Input label="Texto secundario" value={branding.heroSubtitle} onChange={(value) => setBranding((current) => ({ ...current, heroSubtitle: value }))} placeholder="Descripción breve" />
+      <CatalogBrandingAssetInput label="Banner principal" kind="banner" value={preview.banner || branding.heroBannerUrl} uploading={uploadingAsset === 'banner'} onFile={(file) => void uploadAsset('banner', file)} onRemove={() => void removeAsset('banner')} />
+      <div className="grid grid-cols-2 gap-3"><label className="text-sm font-semibold text-zinc-700">Color principal<input type="color" value={branding.primaryColor} onChange={(event) => setBranding((current) => ({ ...current, primaryColor: event.target.value }))} className="mt-2 h-11 w-full rounded-lg border border-zinc-200 bg-white p-1" /></label><label className="text-sm font-semibold text-zinc-700">Color acento<input type="color" value={branding.accentColor} onChange={(event) => setBranding((current) => ({ ...current, accentColor: event.target.value }))} className="mt-2 h-11 w-full rounded-lg border border-zinc-200 bg-white p-1" /></label></div>
     </div>
-  )
+    <button type="button" onClick={save} disabled={saving} className="mt-5 inline-flex min-h-11 items-center rounded-xl bg-castelnova-600 px-4 font-bold text-white hover:bg-castelnova-700 disabled:opacity-60">{saving ? 'Guardando...' : 'Guardar branding'}</button>
+  </section>
 }
 
+function CatalogBrandingAssetInput({ label, kind, value, uploading, onFile, onRemove }: { label: string; kind: 'logo' | 'banner'; value: string; uploading: boolean; onFile: (file: File | null) => void; onRemove: () => void }) {
+  return <div className="rounded-xl border border-zinc-200 p-3"><div className="flex items-center justify-between gap-3"><label className="text-sm font-semibold text-zinc-700">{label}<span className="mt-1 block text-xs font-normal text-zinc-500">PNG, JPG o WEBP · máximo 5 MB</span></label>{value && <button type="button" disabled={uploading} onClick={onRemove} className="inline-flex items-center gap-1 text-xs font-bold text-rose-600 hover:text-rose-700 disabled:opacity-50"><Trash2 size={14} />Eliminar</button>}</div><div className={`mt-3 overflow-hidden rounded-lg border border-dashed border-zinc-200 bg-zinc-50 ${kind === 'banner' ? 'aspect-[16/6]' : 'aspect-square max-w-40'}`}>{value ? <img src={value} alt={`Vista previa de ${label.toLowerCase()}`} className="h-full w-full object-contain" /> : <div className="flex h-full items-center justify-center px-3 text-center text-xs text-zinc-500">Sin imagen configurada</div>}</div><label className="mt-3 inline-flex min-h-10 cursor-pointer items-center rounded-lg border border-zinc-300 bg-white px-3 text-sm font-bold text-zinc-700 hover:bg-zinc-50"><ImageIcon size={16} className="mr-2" />{uploading ? 'Subiendo…' : value ? 'Reemplazar imagen' : 'Seleccionar archivo'}<input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" disabled={uploading} onChange={(event) => onFile(event.target.files?.[0] || null)} /></label></div>
+}
 function getHubStatusLabel(status: string) {
   const labels: Record<string, string> = {
     active: 'Activo',
