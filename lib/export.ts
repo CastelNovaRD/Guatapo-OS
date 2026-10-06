@@ -315,23 +315,32 @@ export async function downloadInvoicesTemplateExcel(params: {
   periodLabel: string
   normalRows: InvoiceTemplateRow[]
   ncfRows: InvoiceTemplateRow[]
+  cooperativeRows: InvoiceTemplateRow[]
 }) {
   const workbook = await loadTemplateWorkbook('/templates/plantilla-facturas.xlsx')
 
   fillInvoiceSheet(
     workbook.getWorksheet('CLIENTES'),
-    'REPORTE DE FACTURA DE: SHOPDESK OS',
+    'REPORTE DE FACTURA DE: GUATAPO OS',
     params.periodLabel,
     params.normalRows,
     false
   )
   fillInvoiceSheet(
     workbook.getWorksheet('CON NCF'),
-    'REPORTE DE FACTURA DE: SHOPDESK OS CON NCF',
+    'REPORTE DE FACTURA DE: GUATAPO OS CON NCF',
     params.periodLabel,
     params.ncfRows,
     true
   )
+  fillInvoiceSheet(
+    workbook.getWorksheet('COOPSEMA'),
+    'REPORTE DE FACTURA DE: GUATAPO OS. COOPERATIVAS',
+    params.periodLabel,
+    params.cooperativeRows,
+    false
+  )
+
   await saveTemplateWorkbook(workbook, params.filename)
 }
 
@@ -339,6 +348,7 @@ export type ReportTemplateSale = {
   date: string
   invoice: string
   customer: string
+  cooperative: string
   channel: string
   status: string
   items: number
@@ -396,11 +406,11 @@ export async function downloadReportsTemplateExcel(params: {
     replaceTemplateRows(
       ventas,
       2,
-      params.sales.map((sale) => [sale.date, sale.invoice, sale.customer, sale.channel, sale.status, sale.items, sale.total, sale.profit, sale.cardFee]),
+      params.sales.map((sale) => [sale.date, sale.invoice, sale.customer, sale.cooperative, sale.channel, sale.status, sale.items, sale.total, sale.profit, sale.cardFee]),
       2,
-      9
+      10
     )
-    resizeTable(ventas, 'VentasTable', `A1:I${Math.max(2, params.sales.length + 1)}`)
+    resizeTable(ventas, 'VentasTable', `A1:J${Math.max(2, params.sales.length + 1)}`)
   }
 
   if (productos) {

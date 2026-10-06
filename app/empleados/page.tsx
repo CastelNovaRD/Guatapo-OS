@@ -1,8 +1,10 @@
-'use client'
+﻿'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
+import { supabase } from '@/lib/supabase'
 import { formatDateTime, formatMoney } from '@/lib/format'
+import { getCurrentStoreId } from '@/lib/store-context'
 import { logAudit } from '@/lib/audit'
 import {
   PERMISSION_GROUPS,
@@ -18,7 +20,6 @@ type Employee = {
   id: string
   store_id: string
   auth_user_id: string | null
-  email: string
   full_name: string
   phone: string | null
   cedula: string | null
@@ -33,8 +34,7 @@ type Employee = {
 }
 
 type EmployeeForm = {
-  email: string
-  password: string
+  auth_user_id: string
   full_name: string
   phone: string
   cedula: string
@@ -47,8 +47,7 @@ type EmployeeForm = {
 }
 
 const emptyForm: EmployeeForm = {
-  email: '',
-  password: '',
+  auth_user_id: '',
   full_name: '',
   phone: '',
   cedula: '',
@@ -63,6 +62,7 @@ const emptyForm: EmployeeForm = {
 const ROLES = ['owner', 'admin', 'manager', 'cashier', 'seller', 'inventory', 'viewer']
 
 export default function EmployeesPage() {
+  const [storeId, setStoreId] = useState<string | null>(null)
   const [employees, setEmployees] = useState<Employee[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -72,48 +72,43 @@ export default function EmployeesPage() {
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null)
   const [form, setForm] = useState<EmployeeForm>(emptyForm)
 
-const loadEmployees = useCallback(async () => {
-  setLoading(true)
-  setError('')
+  const loadEmployees = useCallback(async () => {
+    setLoading(true)
+    setError('')
 
-  try {
-    const response = await fetch('/api/employees', {
-      method: 'GET',
-      credentials: 'include',
-      cache: 'no-store',
-    })
+    const currentStoreId = await getCurrentStoreId()
+    setStoreId(currentStoreId)
 
-    const data = await response.json().catch(() => null)
+    if (!currentStoreId) {
+      setEmployees([])
+      setError('Este usuario no tiene una tienda asignada.')
+      setLoading(false)
+      return
+    }
 
-    if (!response.ok) {
+    const { data, error: loadError } = await supabase
+      .from('employees')
+      .select('id, store_id, auth_user_id, full_name, phone, cedula, salary, position, role, permissions, active, notes, hired_at, created_at')
+      .eq('store_id', currentStoreId)
+      .order('created_at', { ascending: false })
+
+    if (loadError) {
       setEmployees([])
       setError(
-        data?.error ||
-          'No se pudieron cargar los empleados.'
+        loadError.code === '42P01'
+          ? 'La tabla de empleados todavía no existe. Ejecuta outputs/supabase-empleados.sql en Supabase.'
+          : loadError.message
       )
       setLoading(false)
       return
     }
 
-    setEmployees(Array.isArray(data) ? data : [])
-  } catch (error) {
-    setEmployees([])
-    setError(
-      error instanceof Error
-        ? error.message
-        : 'No se pudieron cargar los empleados.'
-    )
-  } finally {
+    setEmployees((data || []) as Employee[])
     setLoading(false)
-  }
-}, [])  
-
+  }, [])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void loadEmployees()
-    }, 0)
-    return () => window.clearTimeout(timer)
+    void loadEmployees()
   }, [loadEmployees])
 
   const visibleEmployees = useMemo(() => {
@@ -139,23 +134,22 @@ const loadEmployees = useCallback(async () => {
   }
 
   function openEditForm(employee: Employee) {
-  const role = employee.role || 'seller'
-  setEditingEmployee(employee)
-  setForm({
-    email: employee.email || '',
-    password: '',
-    full_name: employee.full_name || '',
-    phone: employee.phone || '',
-    cedula: employee.cedula || '',
-    salary: String(employee.salary || ''),
-    position: employee.position || '',
-    role,
-    permissions: mergePermissions(role, employee.permissions || null),
-    active: employee.active !== false,
-    notes: employee.notes || '',
-  })
-  setFormOpen(true)
-}
+    const role = employee.role || 'seller'
+    setEditingEmployee(employee)
+    setForm({
+      auth_user_id: employee.auth_user_id || '',
+      full_name: employee.full_name || '',
+      phone: employee.phone || '',
+      cedula: employee.cedula || '',
+      salary: String(employee.salary || ''),
+      position: employee.position || '',
+      role,
+      permissions: mergePermissions(role, employee.permissions || null),
+      active: employee.active !== false,
+      notes: employee.notes || '',
+    })
+    setFormOpen(true)
+  }
 
   function updateRole(role: string) {
     setForm((current) => ({
@@ -175,191 +169,168 @@ const loadEmployees = useCallback(async () => {
     }))
   }
 
-async function saveEmployee() {
-  if (!form.full_name.trim()) {
-    return alert('Escribe el nombre del empleado.')
-  }
+  async function saveEmployee() {
+    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
+    if (!form.full_name.trim()) return alert('Completa el nombre completo del empleado.')
 
-  if (!form.email.trim()) {
-    return alert('Escribe el correo electrónico del empleado.')
-  }
+    setSaving(true)
 
-  if (!editingEmployee && !form.password) {
-    return alert('La contraseña es obligatoria para crear un empleado.')
-  }
-
-  const payload = {
-  email: form.email.trim(),
-  ...(form.password ? { password: form.password } : {}),
-  full_name: form.full_name.trim(),
-  phone: form.phone.trim() || null,
-  cedula: form.cedula.trim() || null,
-  salary: Number(form.salary || 0),
-  position: form.position.trim() || null,
-  role: form.role,
-  permissions: form.permissions,
-  active: form.active,
-  notes: form.notes.trim() || null,
-}
-
-  setSaving(true)
-
-  try {
-    const isEditing = Boolean(editingEmployee)
-
-    const response = await fetch(
-      isEditing
-        ? `/api/employees/${editingEmployee!.id}`
-        : '/api/employees',
-      {
-        method: isEditing ? 'PATCH' : 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      }
-    )
-
-    const data = await response.json().catch(() => null)
-
-    if (!response.ok) {
-      return alert(
-        'Error guardando empleado: ' +
-          (data?.error || 'Error desconocido')
-      )
+    const payload = {
+      store_id: storeId,
+      auth_user_id: form.auth_user_id.trim() || null,
+      full_name: form.full_name.trim(),
+      phone: form.phone.trim() || null,
+      cedula: form.cedula.trim() || null,
+      salary: Number(form.salary || 0),
+      position: form.position.trim() || null,
+      role: form.role,
+      permissions: form.permissions,
+      active: form.active,
+      notes: form.notes.trim() || null,
     }
 
-    const savedEmployeeId = data?.id || editingEmployee?.id || ''
+    let savedEmployeeId = editingEmployee?.id || ''
+
+    if (editingEmployee) {
+      const { error: updateError } = await supabase
+        .from('employees')
+        .update(payload)
+        .eq('store_id', storeId)
+        .eq('id', editingEmployee.id)
+
+      if (updateError) {
+        setSaving(false)
+        return alert('Error actualizando empleado: ' + updateError.message)
+      }
+    } else {
+      const { data: createdEmployee, error: insertError } = await supabase
+        .from('employees')
+        .insert(payload)
+        .select('id')
+        .single()
+
+      if (insertError) {
+        setSaving(false)
+        return alert('Error creando empleado: ' + insertError.message)
+      }
+
+      savedEmployeeId = createdEmployee.id
+    }
+
+    if (payload.auth_user_id) {
+      const { error: profileError } = await supabase.from('app_profiles').upsert({
+        id: payload.auth_user_id,
+        full_name: payload.full_name,
+        role: payload.role,
+        active: payload.active,
+      })
+
+      if (profileError) {
+        setSaving(false)
+        return alert('Empleado guardado, pero no pude enlazar el perfil de login: ' + profileError.message)
+      }
+
+      const { error: membershipError } = await supabase.from('store_users').upsert(
+        {
+          store_id: storeId,
+          user_id: payload.auth_user_id,
+          role: payload.role,
+          active: payload.active,
+          permissions: payload.permissions,
+        },
+        { onConflict: 'store_id,user_id' }
+      )
+
+      if (membershipError) {
+        setSaving(false)
+        return alert('Empleado guardado, pero no pude enlazar permisos de login: ' + membershipError.message)
+      }
+    }
 
     await logAudit({
+      storeId,
       module: 'empleados',
-      action: isEditing ? 'employee.update' : 'employee.create',
+      action: editingEmployee ? 'employee.update' : 'employee.create',
       entityType: 'employee',
       entityId: savedEmployeeId,
-      summary: `${isEditing ? 'Empleado actualizado' : 'Empleado creado'}: ${payload.full_name}.`,
-      beforeData: editingEmployee
-        ? {
-            full_name: editingEmployee.full_name,
-            role: editingEmployee.role,
-            permissions: editingEmployee.permissions,
-            active: editingEmployee.active,
-          }
-        : null,
-        afterData: {
-      full_name: payload.full_name,
-      phone: payload.phone,
-      cedula: payload.cedula,
-      salary: payload.salary,
-      position: payload.position,
-      role: payload.role,
-      permissions: payload.permissions,
-      active: payload.active,
-      notes: payload.notes,
-      },
-
+      summary: (editingEmployee ? 'Empleado actualizado: ' : 'Empleado creado: ') + payload.full_name + '.',
+      beforeData: editingEmployee,
+      afterData: payload,
     })
 
+    setSaving(false)
     setFormOpen(false)
     setEditingEmployee(null)
     setForm(emptyForm)
-
     await loadEmployees()
-  } catch (error) {
-    alert(
-      'Error guardando empleado: ' +
-        (error instanceof Error
-          ? error.message
-          : 'Error desconocido')
-    )
-  } finally {
-    setSaving(false)
   }
-}
 
-async function deleteEmployee(employee: Employee) {
-  if (!confirm(`¿Eliminar a ${employee.full_name}?`)) return
+  async function deleteEmployee(employee: Employee) {
+    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
+    if (!confirm(`¿Eliminar a ${employee.full_name}?`)) return
 
-  try {
-    const response = await fetch(`/api/employees/${employee.id}`, {
-      method: 'DELETE',
-      credentials: 'include',
-    })
+    const { error: deleteError } = await supabase
+      .from('employees')
+      .delete()
+      .eq('store_id', storeId)
+      .eq('id', employee.id)
 
-    const data = await response.json().catch(() => null)
+    if (deleteError) return alert('Error eliminando empleado: ' + deleteError.message)
 
-    if (!response.ok) {
-      return alert(
-        'Error eliminando empleado: ' +
-          (data?.error || 'Error desconocido')
-      )
+    if (employee.auth_user_id) {
+      await supabase
+        .from('store_users')
+        .update({ active: false })
+        .eq('store_id', storeId)
+        .eq('user_id', employee.auth_user_id)
     }
 
     await logAudit({
+      storeId,
       module: 'empleados',
       action: 'employee.delete',
       entityType: 'employee',
       entityId: employee.id,
-      summary: `Empleado eliminado: ${employee.full_name}.`,
+      summary: 'Empleado eliminado: ' + employee.full_name + '.',
       beforeData: employee,
-      afterData: null,
     })
 
     await loadEmployees()
-  } catch (error) {
-    alert(
-      'Error eliminando empleado: ' +
-        (error instanceof Error
-          ? error.message
-          : 'Error desconocido')
-    )
   }
-}
 
-async function toggleEmployee(employee: Employee) {
-  const nextActive = !employee.active
+  async function toggleEmployeeActive(employee: Employee) {
+    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
+    const nextActive = !employee.active
 
-  try {
-    const response = await fetch(`/api/employees/${employee.id}`, {
-      method: 'PATCH',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        active: nextActive,
-      }),
-    })
+    const { error: updateError } = await supabase
+      .from('employees')
+      .update({ active: nextActive })
+      .eq('store_id', storeId)
+      .eq('id', employee.id)
 
-    const data = await response.json().catch(() => null)
+    if (updateError) return alert('Error cambiando estado: ' + updateError.message)
 
-    if (!response.ok) {
-      return alert(
-        'Error cambiando estado: ' +
-          (data?.error || 'Error desconocido')
-      )
+    if (employee.auth_user_id) {
+      await supabase
+        .from('store_users')
+        .update({ active: nextActive })
+        .eq('store_id', storeId)
+        .eq('user_id', employee.auth_user_id)
     }
 
     await logAudit({
+      storeId,
       module: 'empleados',
-      action: nextActive
-        ? 'employee.activate'
-        : 'employee.deactivate',
+      action: 'employee.toggle_active',
       entityType: 'employee',
       entityId: employee.id,
-      summary: `${nextActive ? 'Empleado activado' : 'Empleado desactivado'}: ${employee.full_name}.`,
+      summary: 'Empleado ' + (nextActive ? 'activado: ' : 'desactivado: ') + employee.full_name + '.',
       beforeData: { active: employee.active },
       afterData: { active: nextActive },
     })
 
     await loadEmployees()
-  } catch (error) {
-    alert(
-      'Error cambiando estado: ' +
-        (error instanceof Error ? error.message : 'Error desconocido')
-    )
   }
-}
 
   return (
     <AppShell>
@@ -442,27 +413,7 @@ async function toggleEmployee(employee: Employee) {
                 ))}
               </select>
             </label>
-            
-            <Input
-  label="CORREO ELECTRÓNICO"
-  type="email"
-  value={form.email}
-  onChange={(value) => setForm({ ...form, email: value })}
-  placeholder="empleado@empresa.com"
-/>
-
-<Input
-  label={editingEmployee ? 'NUEVA CONTRASEÑA' : 'CONTRASEÑA'}
-  type="password"
-  value={form.password}
-  onChange={(value) => setForm({ ...form, password: value })}
-  placeholder={
-    editingEmployee
-      ? 'Dejar vacío para conservar la actual'
-      : 'Mínimo 10 caracteres'
-  }
-/>
-
+            <Input label="USER ID DE SUPABASE PARA LOGIN" value={form.auth_user_id} onChange={(value) => setForm({ ...form, auth_user_id: value })} placeholder="Opcional" />
             <label className="flex items-center gap-3 rounded-xl border border-zinc-200 px-4 py-3">
               <input
                 type="checkbox"
@@ -576,7 +527,7 @@ async function toggleEmployee(employee: Employee) {
                     </td>
                     <td className="p-4">
                       <button
-                        onClick={() => toggleEmployee(employee)}
+                        onClick={() => toggleEmployeeActive(employee)}
                         className={`rounded-full px-3 py-1 text-sm font-bold ${employee.active ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'}`}
                       >
                         {employee.active ? 'Activo' : 'Inactivo'}

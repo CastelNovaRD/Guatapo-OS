@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Lock, Mail } from 'lucide-react'
+import { supabase } from '@/lib/supabase'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -16,17 +17,23 @@ export default function LoginPage() {
   useEffect(() => {
     let active = true
 
-    void Promise.resolve().then(async () => {
-      try {
-        const response = await fetch('/api/auth/session', { cache: 'no-store' })
-        if (active && response.ok) router.replace('/')
-      } finally {
-        if (active) setCheckingSession(false)
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return
+      if (error) console.warn('[Auth] Error verificando sesion en login:', error.message)
+      if (data.session) router.replace('/')
+      setCheckingSession(false)
+    })
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!active) return
+      if (session && ['SIGNED_IN', 'TOKEN_REFRESHED', 'INITIAL_SESSION'].includes(event)) {
+        router.replace('/')
       }
     })
 
     return () => {
       active = false
+      authListener.subscription.unsubscribe()
     }
   }, [router])
 
@@ -41,25 +48,30 @@ export default function LoginPage() {
 
     setLoading(true)
 
-    try {
-      const response = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), password }),
-      })
-      const result = await response.json().catch(() => null) as { error?: string } | null
-      if (!response.ok) {
-        setErrorMessage(result?.error || 'No pude iniciar sesion. Intenta nuevamente.')
-        return
-      }
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    })
 
-      router.replace('/')
-      router.refresh()
-    } catch {
-      setErrorMessage('No pude iniciar sesion. Intenta nuevamente.')
-    } finally {
+    if (error) {
       setLoading(false)
+      setErrorMessage('No pude iniciar sesion: ' + error.message)
+      return
     }
+
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+    const session = data.session || sessionData.session
+
+    setLoading(false)
+
+    if (sessionError) console.warn('[Auth] Error confirmando sesion:', sessionError.message)
+
+    if (!session) {
+      setErrorMessage('No se pudo confirmar la sesion. Intenta nuevamente.')
+      return
+    }
+
+    router.replace('/')
   }
 
   if (checkingSession) {
@@ -85,7 +97,7 @@ export default function LoginPage() {
             />
           )}
           <h2 className="mt-4 text-xl font-bold text-zinc-800">
-            Bienvenido a ShopDesk OS
+            Bienvenido a Guatapo OS
           </h2>
         </div>
 

@@ -1,2 +1,0 @@
-import {requireTenantContext}from '@/lib/auth/tenant-context';import{updateCategory}from '@/lib/repositories/categories-repository'
-export async function PATCH(q:Request,{params}:{params:Promise<{id:string}>}){try{const b=await q.json(),r=await updateCategory(await requireTenantContext(q),(await params).id,Boolean(b.active));return r?Response.json(r):Response.json({error:'Not found'},{status:404})}catch(e){return Response.json({error:e instanceof Error?e.message:'Unavailable'},{status:503})}}

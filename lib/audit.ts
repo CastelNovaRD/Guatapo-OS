@@ -1,3 +1,5 @@
+﻿import { supabase } from '@/lib/supabase'
+
 type AuditPayload = {
   storeId?: string | null
   module: string
@@ -10,46 +12,41 @@ type AuditPayload = {
   metadata?: Record<string, unknown> | null
 }
 
+let auditDisabled = false
+
 export async function logAudit(payload: AuditPayload) {
+  if (auditDisabled || !payload.storeId) return
+
   try {
-    const metadata: Record<string, unknown> = {
-      ...(payload.metadata || {}),
-    }
+    const { data: sessionData } = await supabase.auth.getSession()
+    const user = sessionData.session?.user
 
-    if (payload.entityType) {
-      metadata.entityType = payload.entityType
-    }
+    const { data: profile } = user?.id
+      ? await supabase
+          .from('app_profiles')
+          .select('full_name')
+          .eq('id', user.id)
+          .maybeSingle()
+      : { data: null as { full_name?: string } | null }
 
-    if (payload.entityId) {
-      metadata.entityId = payload.entityId
-    }
-
-    if (payload.beforeData !== undefined) {
-      metadata.beforeData = payload.beforeData
-    }
-
-    if (payload.afterData !== undefined) {
-      metadata.afterData = payload.afterData
-    }
-
-    const response = await fetch('/api/audit', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        module: payload.module,
-        action: payload.action,
-        detail: payload.summary || null,
-        metadata,
-      }),
+    const { error } = await supabase.from('audit_logs').insert({
+      store_id: payload.storeId,
+      user_id: user?.id || null,
+      user_name: profile?.full_name || user?.email || null,
+      user_email: user?.email || null,
+      module: payload.module,
+      action: payload.action,
+      entity_type: payload.entityType || null,
+      entity_id: payload.entityId || null,
+      summary: payload.summary || null,
+      before_data: payload.beforeData ?? null,
+      after_data: payload.afterData ?? null,
+      metadata: payload.metadata || null,
     })
 
-    if (!response.ok) {
-      console.warn(
-        'No se pudo registrar auditoría:',
-        `HTTP ${response.status}`
-      )
+    if (error) {
+      auditDisabled = error.code === '42P01' || error.code === '42703'
+      if (!auditDisabled) console.warn('No se pudo registrar auditoría:', error.message)
     }
   } catch (error) {
     console.warn('No se pudo registrar auditoría:', error)

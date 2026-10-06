@@ -1,112 +1,195 @@
-'use client'
+﻿'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'next/navigation'
-
-type PrintSale = {
-  id: string; invoice_number: string | null; subtotal: number; discount: number; itbis: number; shipping_cost: number; card_fee: number; total: number
-  cash_received: number; cash_change: number; created_at: string; status: string; ncf: string | null
-  fiscal_customer_name: string | null; fiscal_customer_rnc: string | null; fiscal_customer_phone: string | null
-  fiscal_customer_address: string | null; cashier_name: string | null
-}
-type PrintItem = { id: string; product_name: string; quantity: number; unit_price: number; total: number }
-type PrintCustomer = { full_name: string; phone: string | null; document: string | null }
-type PrintStore = { publicName: string | null; logoUrl: string | null; rnc: string | null; phone: string | null }
-type PrintInvoiceResponse = { sale: PrintSale; items: PrintItem[]; customer: PrintCustomer | null; paymentMethod: { name: string } | null; store: PrintStore | null }
-
-const money = (value: number) => new Intl.NumberFormat('es-DO', { style: 'currency', currency: 'DOP', minimumFractionDigits: 2 }).format(Number(value) || 0)
-const dateTime = (value: string) => new Intl.DateTimeFormat('es-DO', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
-const quantity = (value: number) => {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed.toFixed(3).replace(/\.?0+$/, '') : '0'
-}
-function Divider() { return <div className="my-4 border-t border-dashed border-zinc-500" /> }
+import { useParams, useSearchParams } from 'next/navigation'
+import { supabase } from '@/lib/supabase'
+import InvoiceFiscal80 from './InvoiceFiscal80'
+import InvoiceQuick80 from './InvoiceQuick80'
+import InvoiceA4 from './InvoiceA4'
+import type { Invoice80Customer, Invoice80FiscalCustomer, Invoice80Item, Invoice80PaymentMethod, Invoice80Sale } from './invoice80-helpers'
 
 export default function InvoiceSimple80() {
   const params = useParams()
-  const saleId = typeof params.id === 'string' ? params.id : ''
-  const [invoice, setInvoice] = useState<PrintInvoiceResponse | null>(null)
+  const searchParams = useSearchParams()
+  const saleId = params.id as string
+
+  const [sale, setSale] = useState<Invoice80Sale | null>(null)
+  const [items, setItems] = useState<Invoice80Item[]>([])
+  const [customer, setCustomer] = useState<Invoice80Customer | null>(null)
+  const [fiscalCustomer, setFiscalCustomer] = useState<Invoice80FiscalCustomer | null>(null)
+  const [paymentMethod, setPaymentMethod] = useState<Invoice80PaymentMethod | null>(null)
+  const [ncfValidUntil, setNcfValidUntil] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
 
   const loadInvoice = useCallback(async () => {
-    if (!saleId) { setError('No se encontró la venta solicitada.'); setLoading(false); return }
-    setLoading(true); setError(null)
-    try {
-      const response = await fetch(`/api/sales?saleId=${encodeURIComponent(saleId)}`, { cache: 'no-store' })
-      const payload = await response.json().catch(() => null) as PrintInvoiceResponse | { error?: string } | null
-      if (!response.ok || !payload || !('sale' in payload)) throw new Error(payload && 'error' in payload && payload.error ? payload.error : 'No se pudo cargar la factura.')
-      setInvoice(payload)
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'No se pudo cargar la factura.')
-    } finally { setLoading(false) }
+    setLoading(true)
+
+    const { data: saleData, error: saleError } = await supabase
+      .from('sales')
+      .select('id, invoice_number, ncf, subtotal, itbis, total, discount, card_fee, shipping_cost, net_received, created_at, customer_id, payment_method_id, cash_received, cash_change, sale_channel, fiscal_receipt_type, fiscal_status, fiscal_customer_name, fiscal_customer_rnc, fiscal_customer_phone, fiscal_customer_address, fiscal_notes, ecf_security_code, ecf_qr_url')
+      .eq('id', saleId)
+      .single()
+
+    if (saleError) {
+      alert('Error cargando factura: ' + saleError.message)
+      setLoading(false)
+      return
+    }
+
+    setSale(saleData as Invoice80Sale)
+
+    const { data: itemsData } = await supabase
+      .from('sale_items')
+      .select('product_name, quantity, unit_price, discount, total, imei')
+      .eq('sale_id', saleId)
+
+    setItems((itemsData || []) as Invoice80Item[])
+
+    if (saleData.customer_id) {
+      const { data: customerData } = await supabase
+        .from('customers')
+        .select('full_name, phone, cedula')
+        .eq('id', saleData.customer_id)
+        .maybeSingle()
+
+      setCustomer((customerData || null) as Invoice80Customer | null)
+    } else {
+      setCustomer(null)
+    }
+
+    if (saleData.ncf) {
+      const { data: receiptBySale } = await supabase
+        .from('ncf_receipts')
+        .select('valid_until')
+        .eq('used_sale_id', saleId)
+        .maybeSingle()
+
+      if (receiptBySale?.valid_until) {
+        setNcfValidUntil(receiptBySale.valid_until)
+      } else {
+        const { data: receiptByNcf } = await supabase
+          .from('ncf_receipts')
+          .select('valid_until')
+          .eq('ncf', saleData.ncf)
+          .maybeSingle()
+
+        setNcfValidUntil(receiptByNcf?.valid_until || null)
+      }
+
+      const { data: quoteData } = await supabase
+        .from('quotes')
+        .select('quote_customer_id')
+        .eq('ncf', saleData.ncf)
+        .maybeSingle()
+
+      if (quoteData?.quote_customer_id) {
+        const { data: quoteCustomerData } = await supabase
+          .from('quote_customers')
+          .select('company_name, rnc, phone, address')
+          .eq('id', quoteData.quote_customer_id)
+          .maybeSingle()
+
+        setFiscalCustomer((quoteCustomerData || null) as Invoice80FiscalCustomer | null)
+      } else {
+        setFiscalCustomer(null)
+      }
+    } else {
+      setFiscalCustomer(null)
+      setNcfValidUntil(null)
+    }
+
+    if (saleData.payment_method_id) {
+      const { data: methodData } = await supabase
+        .from('payment_methods')
+        .select('name')
+        .eq('id', saleData.payment_method_id)
+        .maybeSingle()
+
+      setPaymentMethod((methodData || null) as Invoice80PaymentMethod | null)
+    } else {
+      setPaymentMethod(null)
+    }
+
+    setLoading(false)
   }, [saleId])
 
-  useEffect(() => { void Promise.resolve().then(loadInvoice) }, [loadInvoice])
-  if (loading) return <main className="p-6">Cargando factura...</main>
-  if (error || !invoice) return <main className="p-6">{error || 'No se encontró la factura.'}</main>
+  useEffect(() => {
+    void Promise.resolve().then(loadInvoice)
+  }, [loadInvoice])
 
-  const { sale, items, customer, paymentMethod, store } = invoice
-  const customerName = sale.fiscal_customer_name || customer?.full_name || 'Cliente no registrado'
-  const customerPhone = sale.fiscal_customer_phone || customer?.phone
-  const customerDocument = sale.fiscal_customer_rnc || customer?.document
-  const businessName = store?.publicName || null
-  const paymentLabel = sale.status === 'pending' ? 'Pendiente' : paymentMethod?.name || 'No registrado'
+  if (loading) return <main className="p-6">Cargando factura...</main>
+  if (!sale) return <main className="p-6">No se encontro la factura.</main>
+  const format = searchParams.get('format') === 'a4' ? 'a4' : 'thermal'
 
   return (
-    <main className="min-h-screen bg-zinc-100 p-4 print:bg-white print:p-0">
-      <div className="mx-auto mb-4 flex w-[80mm] justify-end print:hidden">
-        <button type="button" onClick={() => window.print()} className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800">Imprimir factura</button>
+    <main className="min-h-screen bg-zinc-100 p-6 print:bg-white print:p-0">
+      <div className="mx-auto mb-4 flex max-w-[210mm] justify-end gap-2 print:hidden">
+        <a href={`/ventas/${saleId}/imprimir`} className={`rounded-xl px-4 py-3 font-bold ${format === 'thermal' ? 'bg-zinc-900 text-white' : 'border border-zinc-300 bg-white'}`}>Ticket térmico</a>
+        <a href={`/ventas/${saleId}/imprimir?format=a4`} className={`rounded-xl px-4 py-3 font-bold ${format === 'a4' ? 'bg-zinc-900 text-white' : 'border border-zinc-300 bg-white'}`}>Factura A4</a>
+        <button onClick={() => window.print()} className="rounded-xl bg-emerald-700 px-5 py-3 font-bold text-white">
+          Imprimir factura
+        </button>
       </div>
-      <section className="receipt mx-auto w-[80mm] bg-white px-[5mm] py-[6mm] text-zinc-900 shadow-sm print:shadow-none">
-        <header className="text-center">
-          {store?.logoUrl ? (
-            // The controlled local branding route is intentionally used as-is for print.
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={store.logoUrl} alt={businessName || 'Logo del negocio'} className="mx-auto mb-2 max-h-[24mm] max-w-[64mm] object-contain" />
-          ) : null}
-          {businessName ? <h1 className="text-[23px] font-black tracking-[0.08em]">{businessName}</h1> : null}
-          {store?.rnc ? <p className="mt-1 text-[12px]">RNC: {store.rnc}</p> : null}
-          {store?.phone ? <p className="text-[12px]">Tel.: {store.phone}</p> : null}
-        </header>
-        <Divider />
-        <h2 className="text-center text-[18px] font-black tracking-wide">FACTURA DE VENTA</h2>
-        <div className="mt-3 grid grid-cols-[26mm_1fr] gap-y-1 text-[12px]">
-          <span>No. Venta</span><strong>{sale.invoice_number || sale.id}</strong>
-          <span>Fecha</span><span>{dateTime(sale.created_at)}</span>
-          {sale.cashier_name ? <><span>Cajero</span><span>{sale.cashier_name}</span></> : null}
-          {sale.ncf ? <><span>NCF</span><span>{sale.ncf}</span></> : null}
-        </div>
-        <Divider />
-        <div className="grid grid-cols-[26mm_1fr] gap-y-1 text-[12px]">
-          <span>Cliente</span><strong>{customerName}</strong>
-          {customerPhone ? <><span>Teléfono</span><span>{customerPhone}</span></> : null}
-          {customerDocument ? <><span>RNC/Cédula</span><span>{customerDocument}</span></> : null}
-          {sale.fiscal_customer_address ? <><span>Dirección</span><span>{sale.fiscal_customer_address}</span></> : null}
-        </div>
-        <Divider />
-        <div className="grid grid-cols-[8mm_1fr_22mm_22mm] gap-x-1 border-b border-dashed border-zinc-500 pb-2 text-[10px] font-bold uppercase"><span>Cant.</span><span>Producto</span><span className="text-right">Precio</span><span className="text-right">Total</span></div>
-        <div className="space-y-3 py-3 text-[11px]">
-          {items.map((item) => <div key={item.id} className="grid grid-cols-[8mm_1fr_22mm_22mm] gap-x-1 break-inside-avoid"><span>{quantity(item.quantity)}</span><span className="leading-snug">{item.product_name}</span><span className="text-right">{money(item.unit_price)}</span><span className="text-right">{money(item.total)}</span></div>)}
-        </div>
-        <Divider />
-        <div className="ml-auto w-[49mm] space-y-1 text-[12px]">
-          <div className="flex justify-between"><span>Subtotal</span><span>{money(sale.subtotal)}</span></div>
-          <div className="flex justify-between"><span>Descuento</span><span>{money(sale.discount)}</span></div>
-          <div className="flex justify-between"><span>Impuestos</span><span>{money(sale.itbis)}</span></div>
-          {Number(sale.shipping_cost) > 0 ? <div className="flex justify-between"><span>Envío</span><span>{money(sale.shipping_cost)}</span></div> : null}
-          {Number(sale.card_fee) > 0 ? <div className="flex justify-between"><span>Cargo de tarjeta</span><span>{money(sale.card_fee)}</span></div> : null}
-          <div className="mt-2 flex justify-between border-t border-zinc-700 pt-2 text-[16px] font-black"><span>TOTAL</span><span>{money(sale.total)}</span></div>
-        </div>
-        <Divider />
-        <div className="grid grid-cols-[30mm_1fr] gap-y-1 text-[12px]"><span>Método de pago</span><strong>{paymentLabel}</strong><span>Monto recibido</span><span>{money(sale.cash_received)}</span><span>Cambio</span><span>{money(sale.cash_change)}</span></div>
-        <Divider />
-        <footer className="pt-1 text-center text-[13px] italic"><p className="font-bold">¡Gracias por tu compra!</p>{businessName ? <p className="mt-1">{businessName}</p> : null}</footer>
-      </section>
+
+      {format === 'a4' ? (
+        <InvoiceA4 sale={sale} items={items} customer={customer} paymentMethod={paymentMethod} />
+      ) : sale.ncf ? (
+        <InvoiceFiscal80
+          sale={sale}
+          items={items}
+          customer={fiscalCustomer}
+          fallbackCustomer={customer}
+          paymentMethod={paymentMethod}
+          ncfValidUntil={ncfValidUntil}
+        />
+      ) : (
+        <InvoiceQuick80
+          sale={sale}
+          items={items}
+          customer={customer}
+          paymentMethod={paymentMethod}
+        />
+      )}
+
       <style jsx global>{`
-        .receipt { font-family: Arial, Helvetica, sans-serif; }
-        .receipt * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-        @media print { @page { size: 80mm auto; margin: 0; } html, body { width: 80mm; margin: 0 !important; padding: 0 !important; background: #fff !important; } body { overflow: visible !important; } .receipt { width: 80mm !important; min-height: auto !important; box-shadow: none !important; } }
+        .receipt {
+          color: #000;
+          font-family: Arial, Helvetica, sans-serif;
+        }
+
+        .receipt * {
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
+        }
+
+        @media print {
+          @page {
+            size: ${format === 'a4' ? 'A4' : '80mm auto'};
+            margin: 0;
+          }
+
+          html,
+          body {
+            width: ${format === 'a4' ? '210mm' : '80mm'};
+            margin: 0 !important;
+            padding: 0 !important;
+            background: white !important;
+          }
+
+          body {
+            overflow: visible !important;
+          }
+
+          .receipt {
+            width: 80mm !important;
+            min-height: auto !important;
+            box-shadow: none !important;
+            break-inside: auto;
+            page-break-inside: auto;
+          }
+
+          .invoice-a4 { width: 210mm !important; min-height: 297mm !important; box-shadow: none !important; }
+        }
       `}</style>
     </main>
   )

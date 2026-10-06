@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
+import { supabase } from '@/lib/supabase'
 import { getCurrentStoreId } from '@/lib/store-context'
 import { formatDate, formatMoney } from '@/lib/format'
 import { CheckCircle, CreditCard, Eye, FileBadge2, RefreshCcw, Search, X } from 'lucide-react'
@@ -15,6 +16,7 @@ type Sale = {
   total: number
   status: string
   sale_channel: string
+  cooperative_name: string | null
   created_at: string
   customer_id: string | null
   payment_method_id: string | null
@@ -63,6 +65,8 @@ export default function CuentasPorCobrarPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
 
+  const [receivableTypeFilter, setReceivableTypeFilter] = useState<'all' | 'cooperative' | 'fiscal'>('all')
+  const [cooperativeFilter, setCooperativeFilter] = useState('')
   const [memberSearch, setMemberSearch] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage, setItemsPerPage] = useState(20)
@@ -92,41 +96,63 @@ export default function CuentasPorCobrarPage() {
       return alert('Este usuario no tiene una tienda asignada.')
     }
 
-   try {
-  const response = await fetch('/api/accounts-receivable', {
-    method: 'GET',
-    cache: 'no-store',
-  })
+    const { data: salesData, error: salesError } = await supabase
+      .from('sales')
+      .select(
+        'id, invoice_number, subtotal, discount, itbis, total, status, sale_channel, cooperative_name, created_at, customer_id, payment_method_id, amount_paid, balance_due, ncf, fiscal_receipt_type, fiscal_customer_name, fiscal_customer_rnc, fiscal_customer_phone, fiscal_customer_address'
+      )
+      .eq('store_id', storeId)
+      .in('status', ['credit', 'pending'])
+      .order('created_at', { ascending: false })
 
-  const data = (await response.json().catch(() => null)) as {
-    sales?: Sale[]
-    customers?: Customer[]
-    payments?: Payment[]
-    error?: string
-  } | null
+    if (salesError) {
+      setLoading(false)
+      return alert('Error cargando cuentas por cobrar: ' + salesError.message)
+    }
 
-  if (!response.ok) {
-    throw new Error(
-      data?.error || 'No se pudieron cargar las cuentas por cobrar.'
-    )
+    const saleIds = (salesData || []).map((sale) => sale.id)
+    const customerIds = Array.from(
+      new Set((salesData || []).map((sale) => sale.customer_id).filter(Boolean))
+    ) as string[]
+
+    let customersData: Customer[] = []
+    let paymentsData: Payment[] = []
+
+    if (customerIds.length) {
+      const { data } = await supabase
+        .from('customers')
+        .select('id, full_name, phone, cedula')
+        .in('id', customerIds)
+
+      customersData = data || []
+    }
+
+    if (saleIds.length) {
+      const { data } = await supabase
+        .from('payments')
+        .select('id, sale_id, amount')
+        .in('sale_id', saleIds)
+
+      paymentsData = data || []
+    }
+
+    setSales(salesData || [])
+    setCustomers(customersData)
+    setPayments(paymentsData)
+    setSelectedIds([])
+    setLoading(false)
   }
-
-  setSales(data?.sales || [])
-  setCustomers(data?.customers || [])
-  setPayments(data?.payments || [])
-  setSelectedIds([])
-} catch (error) {
-  alert(
-    'Error cargando cuentas por cobrar: ' +
-      (error instanceof Error ? error.message : 'Error desconocido.')
-  )
-} finally {
-  setLoading(false)
-  }
-}
 
   function customerOf(sale: Sale) {
     return customers.find((customer) => customer.id === sale.customer_id)
+  }
+
+  function receivableKind(sale: Sale): 'cooperative' | 'fiscal' {
+    return sale.sale_channel === 'cooperative' ? 'cooperative' : 'fiscal'
+  }
+
+  function receivableKindLabel(sale: Sale) {
+    return receivableKind(sale) === 'cooperative' ? 'Cooperativa' : 'Cliente con comprobante'
   }
 
   function displayCustomerName(sale: Sale) {
@@ -157,17 +183,33 @@ export default function CuentasPorCobrarPage() {
     return Math.max(0, Number(sale.total || 0) - paidAmount(sale))
   }
 
+  const cooperatives = useMemo(() => {
+    return Array.from(
+      new Set(sales.filter((sale) => receivableKind(sale) === 'cooperative').map((sale) => sale.cooperative_name || 'Sin cooperativa'))
+    )
+  }, [sales])
+
+  const cooperativeSales = useMemo(() => sales.filter((sale) => receivableKind(sale) === 'cooperative' && balanceOf(sale) > 0), [sales, payments])
+  const fiscalSales = useMemo(() => sales.filter((sale) => receivableKind(sale) === 'fiscal' && balanceOf(sale) > 0), [sales, payments])
+  const cooperativePending = cooperativeSales.reduce((sum, sale) => sum + balanceOf(sale), 0)
+  const fiscalPending = fiscalSales.reduce((sum, sale) => sum + balanceOf(sale), 0)
 
   useEffect(() => {
     setCurrentPage(1)
     setSelectedIds([])
-  }, [memberSearch, itemsPerPage])
+  }, [receivableTypeFilter, cooperativeFilter, memberSearch, itemsPerPage])
 
   const filteredSales = useMemo(() => {
     const q = memberSearch.toLowerCase().trim()
 
     return sales.filter((sale) => {
+      const kind = receivableKind(sale)
       const customer = customerOf(sale)
+
+      const matchType = receivableTypeFilter === 'all' ? true : kind === receivableTypeFilter
+      const matchCoop = cooperativeFilter && kind === 'cooperative'
+        ? (sale.cooperative_name || 'Sin cooperativa') === cooperativeFilter
+        : true
 
       const text = `${sale.fiscal_customer_name || ''} ${sale.fiscal_customer_rnc || ''} ${sale.fiscal_customer_phone || ''} ${customer?.full_name || ''} ${customer?.cedula || ''} ${
         customer?.phone || ''
@@ -175,14 +217,14 @@ export default function CuentasPorCobrarPage() {
 
       const matchMember = q ? text.includes(q) : true
 
-      return matchMember && balanceOf(sale) > 0
+      return matchType && matchCoop && matchMember && balanceOf(sale) > 0
     })
-  }, [sales, customers, payments, memberSearch])
+  }, [sales, customers, payments, receivableTypeFilter, cooperativeFilter, memberSearch])
 
   const totalReceivablePages = Math.max(1, Math.ceil(filteredSales.length / itemsPerPage))
   const firstVisibleSale = filteredSales.length === 0 ? 0 : (currentPage - 1) * itemsPerPage + 1
   const lastVisibleSale = Math.min(filteredSales.length, currentPage * itemsPerPage)
-  const paginatedSales = filteredSales.slice(firstVisibleSale === 0 ? 0 : firstVisibleSale - 1, lastVisibleSale)
+  const páginatedSales = filteredSales.slice(firstVisibleSale === 0 ? 0 : firstVisibleSale - 1, lastVisibleSale)
 
   const selectedSales = filteredSales.filter((sale) => selectedIds.includes(sale.id))
 
@@ -210,54 +252,40 @@ export default function CuentasPorCobrarPage() {
     setPaymentModal(true)
   }
 
- async function openSaleDetails(sale: Sale) {
-  const storeId = await getCurrentStoreId()
+  async function openSaleDetails(sale: Sale) {
+    const storeId = await getCurrentStoreId()
+    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
 
-  if (!storeId) {
-    return alert('Este usuario no tiene una tienda asignada.')
-  }
+    setSelectedSaleDetails(sale)
+    setDetailItems([])
+    setDetailPaymentMethod(null)
+    setDetailsLoading(true)
 
-  setSelectedSaleDetails(sale)
-  setDetailItems([])
-  setDetailPaymentMethod(null)
-  setDetailsLoading(true)
+    const [{ data: itemsData, error: itemsError }, { data: methodData }] = await Promise.all([
+      supabase
+        .from('sale_items')
+        .select('id, product_name, quantity, unit_price, discount, total, imei')
+        .eq('store_id', storeId)
+        .eq('sale_id', sale.id),
+      sale.payment_method_id
+        ? supabase
+            .from('payment_methods')
+            .select('id, name')
+            .eq('id', sale.payment_method_id)
+            .maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+    ])
 
-  try {
-    const response = await fetch(
-      `/api/accounts-receivable?saleId=${encodeURIComponent(sale.id)}`,
-      {
-        method: 'GET',
-        cache: 'no-store',
-      }
-    )
+    setDetailsLoading(false)
 
-    const data = (await response.json().catch(() => null)) as {
-      sale?: Sale
-      items?: SaleItem[]
-      paymentMethod?: PaymentMethod | null
-      error?: string
-    } | null
-
-    if (!response.ok) {
-      throw new Error(
-        data?.error || 'No se pudo cargar el detalle de la factura.'
-      )
+    if (itemsError) {
+      setSelectedSaleDetails(null)
+      return alert('Error cargando detalle de factura: ' + itemsError.message)
     }
 
-    setSelectedSaleDetails(data?.sale || sale)
-    setDetailItems(data?.items || [])
-    setDetailPaymentMethod(data?.paymentMethod || null)
-  } catch (error) {
-    setSelectedSaleDetails(null)
-
-    alert(
-      'Error cargando detalle de factura: ' +
-        (error instanceof Error ? error.message : 'Error desconocido.')
-    )
-  } finally {
-    setDetailsLoading(false)
+    setDetailItems(itemsData || [])
+    setDetailPaymentMethod(methodData || null)
   }
-}
 
   function openCreditNoteFlow(sale: Sale) {
     const invoice = encodeURIComponent(sale.invoice_number || sale.id)
@@ -270,119 +298,131 @@ export default function CuentasPorCobrarPage() {
   }
 
   async function registerPayment() {
-  const storeId = await getCurrentStoreId()
+    const storeId = await getCurrentStoreId()
 
-  if (!storeId) {
-    return alert('Este usuario no tiene una tienda asignada.')
-  }
+    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
 
-  const amount = Number(paymentAmount || 0)
+    const amount = Number(paymentAmount || 0)
 
-  if (selectedSales.length === 0) {
-    return alert('Selecciona facturas.')
-  }
+    if (selectedSales.length === 0) return alert('Selecciona facturas.')
+    if (amount <= 0) return alert('Escribe el monto recibido.')
 
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return alert('Escribe el monto recibido.')
-  }
+    setSaving(true)
 
-  setSaving(true)
+    let remaining = amount
 
-  try {
-    const response = await fetch('/api/accounts-receivable', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        saleIds: selectedSales.map((sale) => sale.id),
-        amount,
-        paymentDate: paymentDate
-          ? `${paymentDate}T12:00:00`
-          : new Date().toISOString(),
+    for (const sale of selectedSales) {
+      if (remaining <= 0) break
+
+      const balance = balanceOf(sale)
+      const amountForSale = Math.min(balance, remaining)
+      const newPaid = paidAmount(sale) + amountForSale
+      const newBalance = Math.max(0, Number(sale.total || 0) - newPaid)
+
+      const { error: paymentError } = await supabase.from('payments').insert({
+        store_id: storeId,
+        sale_id: sale.id,
+        amount: amountForSale,
+        payment_date: paymentDate ? `${paymentDate}T12:00:00` : new Date().toISOString(),
         reference: reference.trim() || null,
         notes: notes.trim() || null,
-      }),
-    })
+      })
 
-    const data = (await response.json().catch(() => null)) as {
-      payments?: Array<{
-        saleId: string
-        amount: number
-        balanceDue: number
-        status: string
-      }>
-      appliedAmount?: number
-      unappliedAmount?: number
-      error?: string
-    } | null
+      if (paymentError) {
+        setSaving(false)
+        return alert('Error registrando pago: ' + paymentError.message)
+      }
 
-    if (!response.ok) {
-      throw new Error(
-        data?.error || 'No se pudo registrar el pago.'
-      )
+      const { error: saleError } = await supabase
+        .from('sales')
+        .update({
+          amount_paid: newPaid,
+          balance_due: newBalance,
+          status: newBalance <= 0 ? 'paid' : sale.status,
+          paid_at: newBalance <= 0 ? new Date().toISOString() : null,
+          payment_reference: reference.trim() || null,
+          payment_notes: notes.trim() || null,
+        })
+        .eq('id', sale.id)
+
+      if (saleError) {
+        setSaving(false)
+        return alert('Pago guardado, pero error actualizando factura: ' + saleError.message)
+      }
+
+      remaining -= amountForSale
     }
 
+    setSaving(false)
     setPaymentModal(false)
-
     await loadData()
 
-    const unappliedAmount = Number(data?.unappliedAmount || 0)
-
-    if (unappliedAmount > 0) {
-      alert(
-        `Pago registrado correctamente. Quedaron ${formatMoney(
-          unappliedAmount
-        )} sin aplicar porque las facturas seleccionadas ya fueron cubiertas.`
-      )
-      return
-    }
-
     alert('Pago registrado correctamente.')
-  } catch (error) {
-    alert(
-      'Error registrando pago: ' +
-        (error instanceof Error ? error.message : 'Error desconocido.')
-    )
-  } finally {
-    setSaving(false)
   }
-}
 
   return (
     <AppShell>
       <div className="mb-8 flex items-start justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-3 text-3xl font-bold">
-            <CreditCard className="text-[#a90404]" />
+            <CreditCard className="text-emerald-500" />
             Cuentas por Cobrar
           </h1>
           <p className="text-zinc-500">
-            Facturas pendientes y pagos por cobrar de clientes.
+            Facturas pendientes de cooperativas y clientes con comprobante.
           </p>
         </div>
 
         <button
           onClick={openPaymentModal}
-          className="rounded-xl bg-[#a90404] px-5 py-3 font-bold text-white hover:bg-[#8f0303]"
+          className="rounded-xl bg-emerald-500 px-5 py-3 font-bold text-white hover:bg-emerald-600"
         >
           Registrar pago
         </button>
       </div>
 
-      <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3">
+      <div className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-5">
         <Stat title="Pendiente filtrado" value={formatMoney(totalPending)} />
+        <Stat title="Cooperativas" value={formatMoney(cooperativePending)} />
+        <Stat title="Clientes comprobante" value={formatMoney(fiscalPending)} />
         <Stat title="Facturas pendientes" value={String(filteredSales.length)} />
         <Stat title="Seleccionado" value={formatMoney(selectedTotal)} green />
       </div>
 
-      <div className="mb-6">
-        <div className="flex items-center gap-3 rounded-2xl border border-zinc-200 bg-white px-4 py-3 shadow-sm">
-          <Search className="text-[#a90404]" size={20} />
+      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-4">
+        <select
+          value={receivableTypeFilter}
+          onChange={(e) => {
+            setReceivableTypeFilter(e.target.value as 'all' | 'cooperative' | 'fiscal')
+            setCooperativeFilter('')
+          }}
+          className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 shadow-sm outline-none focus:border-emerald-500"
+        >
+          <option value="all">Todas las cuentas</option>
+          <option value="cooperative">Cooperativas</option>
+          <option value="fiscal">Clientes con comprobante</option>
+        </select>
+
+        <select
+          value={cooperativeFilter}
+          onChange={(e) => setCooperativeFilter(e.target.value)}
+          disabled={receivableTypeFilter === 'fiscal'}
+          className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 shadow-sm outline-none focus:border-emerald-500 disabled:bg-zinc-100 disabled:text-zinc-400"
+        >
+          <option value="">Todas las cooperativas</option>
+          {cooperatives.map((coop) => (
+            <option key={coop} value={coop}>
+              {coop}
+            </option>
+          ))}
+        </select>
+
+        <div className="flex items-center gap-3 rounded-2xl border border-zinc-200 bg-white px-4 py-3 shadow-sm md:col-span-2">
+          <Search className="text-emerald-500" size={20} />
           <input
             value={memberSearch}
             onChange={(e) => setMemberSearch(e.target.value)}
-            placeholder="Buscar por cliente, cÃ©dula, telÃ©fono, factura, RNC o NCF..."
+            placeholder="Buscar por socio, cédula, teléfono o factura..."
             className="w-full bg-transparent outline-none"
           />
         </div>
@@ -397,11 +437,11 @@ export default function CuentasPorCobrarPage() {
             </p>
           </div>
           <label className="flex items-center gap-2 text-sm font-semibold text-zinc-600">
-            Facturas por pÃ¡gina
+            Facturas por página
             <select
               value={itemsPerPage}
               onChange={(e) => setItemsPerPage(Number(e.target.value))}
-              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-zinc-950 outline-none focus:border-[#a90404]"
+              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-zinc-950 outline-none focus:border-emerald-500"
             >
               {[10, 20, 50, 100].map((size) => (
                 <option key={size} value={size}>{size}</option>
@@ -422,6 +462,7 @@ export default function CuentasPorCobrarPage() {
                   <th className="p-4"></th>
                   <th className="p-4">Factura</th>
                   <th className="p-4">Cliente</th>
+                  <th className="p-4">Tipo</th>
                   <th className="p-4">Fecha</th>
                   <th className="p-4">Total</th>
                   <th className="p-4">Pagado</th>
@@ -431,7 +472,7 @@ export default function CuentasPorCobrarPage() {
               </thead>
 
               <tbody>
-                {paginatedSales.map((sale) => {
+                {páginatedSales.map((sale) => {
                   const customer = customerOf(sale)
 
                   return (
@@ -451,12 +492,14 @@ export default function CuentasPorCobrarPage() {
 
                       <td className="p-4">
                         <p className="font-semibold">
-                          {displayCustomerName(sale)}
+                          {customer?.full_name || 'Sin socio'}
                         </p>
                         <p className="text-sm text-zinc-500">
-                          {customer?.cedula || '-'} Â· {customer?.phone || '-'}
+                          {customer?.cedula || '-'} · {customer?.phone || '-'}
                         </p>
                       </td>
+
+                      <td className="p-4">{sale.cooperative_name || '-'}</td>
 
                       <td className="p-4">{formatDate(sale.created_at)}</td>
 
@@ -493,7 +536,7 @@ export default function CuentasPorCobrarPage() {
                           <button
                             type="button"
                             onClick={() => openExchangeFlow(sale)}
-                            className="inline-flex items-center gap-1 rounded-xl border border-[#a90404]/20 px-3 py-2 text-sm font-bold text-[#a90404] hover:bg-[#a90404]/5"
+                            className="inline-flex items-center gap-1 rounded-xl border border-emerald-200 px-3 py-2 text-sm font-bold text-emerald-700 hover:bg-emerald-50"
                           >
                             <RefreshCcw size={15} />
                             Cambio
@@ -511,7 +554,7 @@ export default function CuentasPorCobrarPage() {
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white p-4 text-sm text-zinc-600 shadow-sm">
         <span>
-          PÃ¡gina {currentPage} de {totalReceivablePages}
+          Página {currentPage} de {totalReceivablePages}
         </span>
         <div className="flex gap-2">
           <button
@@ -553,6 +596,7 @@ export default function CuentasPorCobrarPage() {
                   <Info title="RNC / Cedula" value={displayCustomerDocument(selectedSaleDetails)} />
                   <Info title="Telefono" value={displayCustomerPhone(selectedSaleDetails)} />
                   <Info title="NCF" value={selectedSaleDetails.ncf || '-'} />
+                  <Info title="Tipo" value={receivableKindLabel(selectedSaleDetails)} />
                   <Info title="Metodo" value={detailPaymentMethod?.name || 'Pendiente de pago'} />
                 </div>
 
@@ -584,7 +628,7 @@ export default function CuentasPorCobrarPage() {
                 <div className="flex flex-wrap justify-end gap-3">
                   <button onClick={() => window.open(`/ventas/${selectedSaleDetails.id}/imprimir`, '_blank')} className="rounded-xl border border-zinc-300 px-5 py-3 font-bold hover:bg-zinc-100">Reimprimir</button>
                   <button onClick={() => openCreditNoteFlow(selectedSaleDetails)} className="rounded-xl border border-red-200 px-5 py-3 font-bold text-red-600 hover:bg-red-50">Anular con nota de credito</button>
-                  <button onClick={() => openExchangeFlow(selectedSaleDetails)} className="rounded-xl bg-[#a90404] px-5 py-3 font-bold text-white hover:bg-[#8f0303]">Cambio de equipo</button>
+                  <button onClick={() => openExchangeFlow(selectedSaleDetails)} className="rounded-xl bg-emerald-600 px-5 py-3 font-bold text-white hover:bg-emerald-700">Cambio de equipo</button>
                 </div>
               </div>
             )}
@@ -620,7 +664,7 @@ export default function CuentasPorCobrarPage() {
                 type="number"
                 value={paymentAmount}
                 onChange={(e) => setPaymentAmount(e.target.value)}
-                className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-[#a90404]"
+                className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-emerald-500"
               />
 
               <label className="mt-4 block text-sm text-zinc-500">
@@ -630,7 +674,7 @@ export default function CuentasPorCobrarPage() {
                 type="date"
                 value={paymentDate}
                 onChange={(e) => setPaymentDate(e.target.value)}
-                className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-[#a90404]"
+                className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-emerald-500"
               />
 
               <label className="mt-4 block text-sm text-zinc-500">
@@ -640,7 +684,7 @@ export default function CuentasPorCobrarPage() {
                 value={reference}
                 onChange={(e) => setReference(e.target.value)}
                 placeholder="Transferencia, cheque, comprobante..."
-                className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-[#a90404]"
+                className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-emerald-500"
               />
 
               <label className="mt-4 block text-sm text-zinc-500">
@@ -649,13 +693,13 @@ export default function CuentasPorCobrarPage() {
               <textarea
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-[#a90404]"
+                className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-emerald-500"
               />
 
               <button
                 onClick={registerPayment}
                 disabled={saving}
-                className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-[#a90404] py-4 font-bold text-white hover:bg-[#8f0303] disabled:opacity-50"
+                className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 py-4 font-bold text-white hover:bg-emerald-600 disabled:opacity-50"
               >
                 <CheckCircle size={20} />
                 {saving ? 'Guardando...' : 'Guardar pago'}
@@ -703,4 +747,3 @@ function DetailRow({ label, value, bold = false, red = false }: { label: string;
     </div>
   )
 }
-

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { fetchHubConfigFromServer, normalizeHubConfig } from '@/lib/hub-config'
+import { fetchHubConfigFromServer, normalizeHubConfig } from '@/lib/castelnova-hub'
 
 export const dynamic = 'force-dynamic'
 

@@ -2,38 +2,33 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
+import { supabase } from '@/lib/supabase'
 import { formatDate, formatMoney } from '@/lib/format'
-
-type Customer = {
-  customer_id: string | null
-  full_name: string
-  document: string | null
-  phone: string | null
-  address: string | null
-}
-
-type Item = {
-  id: string
-  quote_id: string
-  product_id: string | null
-  product_name: string
-  quantity: number
-  unit_price: number
-  tax: number
-  total: number
-}
 
 type Quote = {
   id: string
-  quote_number: string
-  status: string
+  quote_number: string | null
   subtotal: number
-  tax: number
+  tax_percent: number
+  tax_amount: number
+  discount: number
   total: number
-  expires_at: string | null
+  status: string
   created_at: string
-  customer: Customer | null
-  items: Item[]
+  quote_customer_id: string | null
+}
+
+type Customer = {
+  company_name: string
+  rnc: string | null
+}
+
+type Item = {
+  product_name: string
+  quantity: number
+  unit_price: number
+  discount: number
+  total: number
 }
 
 export default function QuotationA4() {
@@ -41,77 +36,55 @@ export default function QuotationA4() {
   const quoteId = params.id as string
 
   const [quote, setQuote] = useState<Quote | null>(null)
+  const [customer, setCustomer] = useState<Customer | null>(null)
+  const [items, setItems] = useState<Item[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
 
   const loadQuote = useCallback(async () => {
     setLoading(true)
-    setError('')
 
-    try {
-      const response = await fetch(
-        `/api/quotes/${encodeURIComponent(quoteId)}`,
-        {
-          method: 'GET',
-          credentials: 'include',
-          cache: 'no-store',
-        }
-      )
+    const { data: quoteData, error } = await supabase
+      .from('quotes')
+      .select('*')
+      .eq('id', quoteId)
+      .single()
 
-      const data = await response.json().catch(() => null)
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error || 'No se pudo cargar la cotización.'
-        )
-      }
-
-      setQuote(data)
-    } catch (loadError) {
-      setQuote(null)
-      setError(
-        loadError instanceof Error
-          ? loadError.message
-          : 'No se pudo cargar la cotización.'
-      )
-    } finally {
+    if (error) {
+      alert('Error cargando cotización: ' + error.message)
       setLoading(false)
+      return
     }
+
+    setQuote(quoteData)
+
+    if (quoteData?.quote_customer_id) {
+      const { data: customerData } = await supabase
+        .from('quote_customers')
+        .select('company_name, rnc')
+        .eq('id', quoteData.quote_customer_id)
+        .maybeSingle()
+
+      setCustomer(customerData || null)
+    }
+
+    const { data: itemsData } = await supabase
+      .from('quote_items')
+      .select('product_name, quantity, unit_price, discount, total')
+      .eq('quote_id', quoteId)
+
+    setItems(itemsData || [])
+    setLoading(false)
   }, [quoteId])
 
   useEffect(() => {
-    void loadQuote()
+    loadQuote()
   }, [loadQuote])
 
-  if (loading) {
-    return <main className="p-10">Cargando cotización...</main>
-  }
+  if (loading) return <main className="p-10">Cargando cotización...</main>
+  if (!quote) return <main className="p-10">No se encontró la cotización.</main>
 
-  if (!quote) {
-    return (
-      <main className="p-10">
-        {error || 'No se encontró la cotización.'}
-      </main>
-    )
-  }
-
-  const rows = quote.items.slice(0, 4)
+  const rows = items.slice(0, 4)
   const rowTops = ['147.5mm', '160.8mm', '174.2mm', '187.5mm']
-
-  const itemTaxTotal = quote.items.reduce(
-    (sum, item) => sum + Number(item.tax || 0),
-    0
-  )
-
-  const taxAmount =
-    itemTaxTotal > 0
-      ? itemTaxTotal
-      : Math.max(0, Number(quote.tax || 0))
-
-  const discount = Math.max(
-    0,
-    Number(quote.subtotal || 0) + taxAmount - Number(quote.total || 0)
-  )
 
   return (
     <main className="min-h-screen bg-zinc-200 p-6 print:bg-white print:p-0">
@@ -131,102 +104,69 @@ export default function QuotationA4() {
           className="absolute inset-0 h-full w-full object-fill"
         />
 
+        {/* Datos cliente */}
         <Text x="35.5mm" y="101.7mm" w="85mm" size="4mm">
-          {quote.customer?.full_name || 'Sin cliente'}
+          {customer?.company_name || 'Sin cliente'}
         </Text>
 
         <Text x="30.5mm" y="109mm" w="50mm" size="5mm">
-          {quote.customer?.document || '-'}
+          {customer?.rnc || '-'}
         </Text>
 
         <Text x="32.5mm" y="118mm" w="50mm" size="5mm">
           {formatDate(quote.created_at)}
         </Text>
 
+        {/* Número cotización */}
         <Text x="151mm" y="91.6mm" w="45mm" size="5mm" center>
           {quote.quote_number || `COT-${quote.id.slice(0, 8).toUpperCase()}`}
         </Text>
 
+        {/* Productos */}
         {rows.map((item, index) => {
-          const lineTax = Math.max(0, Number(item.tax || 0))
-          const lineTotal = Math.max(0, Number(item.total || 0))
+          const base = Number(item.total || 0)
+          const itbis = Math.max(0, base) * (Number(quote.tax_percent || 0) / 100)
+          const totalWithTax = Math.max(0, base) + itbis
 
           return (
-            <div key={item.id || index}>
-              <Text
-                x="18mm"
-                y={rowTops[index]}
-                w="60mm"
-                size="3.8mm"
-                center
-              >
+            <div key={index}>
+              <Text x="18mm" y={rowTops[index]} w="60mm" size="3.8mm" center>
                 {item.product_name}
               </Text>
 
-              <Text
-                x="88mm"
-                y={rowTops[index]}
-                w="20mm"
-                size="3.8mm"
-                center
-              >
+              <Text x="88mm" y={rowTops[index]} w="20mm" size="3.8mm" center>
                 {item.quantity}
               </Text>
 
-              <Text
-                x="109mm"
-                y={rowTops[index]}
-                w="31mm"
-                size="3.8mm"
-                center
-              >
+              <Text x="109mm" y={rowTops[index]} w="31mm" size="3.8mm" center>
                 {formatMoney(item.unit_price)}
               </Text>
 
-              <Text
-                x="148mm"
-                y={rowTops[index]}
-                w="12mm"
-                size="3.8mm"
-                center
-              >
-                {formatMoney(lineTax)}
+              <Text x="148mm" y={rowTops[index]} w="12mm" size="3.8mm" center>
+                {formatMoney(itbis)}
               </Text>
 
-              <Text
-                x="176mm"
-                y={rowTops[index]}
-                w="20mm"
-                size="3.8mm"
-                center
-              >
-                {formatMoney(lineTotal)}
+              <Text x="176mm" y={rowTops[index]} w="20mm" size="3.8mm" center>
+                {formatMoney(totalWithTax)}
               </Text>
             </div>
           )
         })}
 
+        {/* Totales */}
         <Text x="150mm" y="207.5mm" w="49mm" size="4mm" right>
           {formatMoney(quote.subtotal)}
         </Text>
 
         <Text x="150mm" y="215.3mm" w="49mm" size="4mm" right>
-          {formatMoney(taxAmount)}
+          {formatMoney(quote.tax_amount)}
         </Text>
 
         <Text x="150mm" y="222.5mm" w="49mm" size="4mm" right>
-          {formatMoney(discount)}
+          {formatMoney(quote.discount)}
         </Text>
 
-        <Text
-          x="140mm"
-          y="230.7mm"
-          w="60mm"
-          size="6.4mm"
-          right
-          bold
-          green
-        >
+        <Text x="140mm" y="230.7mm" w="60mm" size="6.4mm" right bold green>
           {formatMoney(quote.total)}
         </Text>
       </section>
@@ -284,9 +224,7 @@ function Text({
 }) {
   return (
     <div
-      className={`absolute leading-tight ${
-        bold ? 'font-black' : 'font-medium'
-      } ${
+      className={`absolute leading-tight ${bold ? 'font-black' : 'font-medium'} ${
         center ? 'text-center' : right ? 'text-right' : 'text-left'
       } ${green ? 'text-[#078a0c]' : 'text-[#15171c]'}`}
       style={{

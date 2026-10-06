@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { Heart, Menu, Search, ShoppingCart, UserCircle } from 'lucide-react'
 import { readCart } from './cart'
-import { DEFAULT_WEB_SETTINGS, type WebSettings } from '@/lib/web-settings'
+import type { WebSettings } from '@/lib/web-settings'
 
 type WebHeaderProps = {
   search?: string
@@ -52,11 +52,11 @@ export default function WebHeader({ search = '', onSearchChange, settings, onMen
 
     refreshCount()
     window.addEventListener('storage', refreshCount)
-    window.addEventListener('shopdesk-cart-updated', refreshCount)
+    window.addEventListener('guatapo-cart-updated', refreshCount)
 
     return () => {
       window.removeEventListener('storage', refreshCount)
-      window.removeEventListener('shopdesk-cart-updated', refreshCount)
+      window.removeEventListener('guatapo-cart-updated', refreshCount)
     }
   }, [])
 
@@ -79,7 +79,7 @@ export default function WebHeader({ search = '', onSearchChange, settings, onMen
         </button>
 
         <Link href="/web" className="flex shrink-0 items-center">
-          <img src={settings?.logoUrl || DEFAULT_WEB_SETTINGS.logoUrl} alt="Logo de la tienda" className="h-20 w-[250px] object-contain object-left sm:h-24 sm:w-[340px] lg:w-[380px]" />
+          <img src={settings?.logoUrl || '/logo-guatapo-transparent.png'} alt="Guatapo" className="h-20 w-[250px] object-contain object-left sm:h-24 sm:w-[340px] lg:w-[380px]" />
         </Link>
 
         <label className="mx-auto hidden min-w-0 max-w-xl flex-1 items-center gap-3 rounded-full border border-zinc-200 bg-zinc-50 px-5 py-3 shadow-inner transition focus-within:bg-white md:flex" style={{ borderColor: 'rgba(24,24,27,.12)' }}>
@@ -108,13 +108,9 @@ export default function WebHeader({ search = '', onSearchChange, settings, onMen
             ))}
           </div>
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-            {settings?.contactEmail && <span>{settings.contactEmail}</span>}
-            {settings?.contactPhone && <span>TEL: {settings.contactPhone}</span>}
-            {settings?.whatsapp && (
-              <a href={`https://wa.me/${settings.whatsapp}`} target="_blank" rel="noopener noreferrer" className="hover:text-emerald-300">
-                Contactanos
-              </a>
-            )}
+            <span>{settings?.contactEmail || 'Info@guatapo.com'}</span>
+            <span>TEL: {settings?.contactPhone || '809-636-1020'}</span>
+            <a href={`https://wa.me/${settings?.whatsapp || '18096361020'}`} target="_blank" rel="noopener noreferrer" className="hover:text-emerald-300">Contactanos</a>
           </div>
         </div>
       </div>
@@ -128,3 +124,4 @@ export default function WebHeader({ search = '', onSearchChange, settings, onMen
     </header>
   )
 }
+

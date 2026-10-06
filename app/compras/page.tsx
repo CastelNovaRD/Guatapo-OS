@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import AppShell from '@/components/AppShell'
 import ExportModal from '@/components/export/ExportModal'
 import ImportModal from '@/components/importing/ImportModal'
+import { supabase } from '@/lib/supabase'
 import { formatDateTime, formatMoney } from '@/lib/format'
 import { getCurrentStoreId } from '@/lib/store-context'
 import { logAudit } from '@/lib/audit'
@@ -139,143 +140,63 @@ export default function ComprasPage() {
     void loadData()
   }, [])
 
- async function loadData() {
-  setLoading(true)
-
-  try {
+  async function loadData() {
+    setLoading(true)
     const currentStoreId = await getCurrentStoreId()
     setStoreId(currentStoreId)
 
     if (!currentStoreId) {
-      alert('Este usuario no tiene una tienda asignada.')
-      return
+      setLoading(false)
+      return alert('Este usuario no tiene una tienda asignada.')
     }
 
-    const [
-      productsResponse,
-      suppliersResponse,
-      purchasesResponse,
-    ] = await Promise.all([
-      fetch('/api/products?limit=1000', {
-        cache: 'no-store',
-      }),
-      fetch('/api/suppliers', {
-        cache: 'no-store',
-      }),
-      fetch('/api/purchases', {
-        cache: 'no-store',
-      }),
-    ])
+    const { data: productsData, error: productsError } = await supabase
+      .from('products')
+      .select('id, name, sku, barcode, image_url, cost, stock, active')
+      .eq('store_id', currentStoreId)
+      .order('name')
 
-    const productsData = await productsResponse
-      .json()
-      .catch(() => null)
+    const { data: suppliersData, error: suppliersError } = await supabase
+      .from('suppliers')
+      .select('id, commercial_name, document, phone')
+      .eq('store_id', currentStoreId)
+      .order('commercial_name')
 
-    const suppliersData = await suppliersResponse
-      .json()
-      .catch(() => null)
+    let supportsExpenseColumns = true
+    let purchasesData: unknown[] | null = null
+    let purchasesError: { message: string } | null = null
+    const purchasesWithExpenses = await supabase
+      .from('purchases')
+      .select('id, supplier_id, supplier_name, supplier_document, invoice_number, purchase_date, received_date, status, payment_method, payment_status, amount_paid, balance_due, subtotal, tax_total, discount_total, other_expenses, shipping_transport_cost, expense_notes, total, cost_rule, notes, created_at, purchase_items(id, product_id, product_name, sku, quantity, requested_quantity, received_quantity, unit_cost, discount, tax_amount, other_expense_unit, real_unit_cost, previous_avg_cost, new_avg_cost, total)')
+      .eq('store_id', currentStoreId)
+      .order('created_at', { ascending: false })
+      .limit(40)
 
-    const purchasesData = await purchasesResponse
-      .json()
-      .catch(() => null)
-
-    if (!productsResponse.ok) {
-      alert(
-        'Error cargando productos: ' +
-          (productsData?.error || 'Error desconocido.')
-      )
+    if (purchasesWithExpenses.error && purchasesWithExpenses.error.message.includes('shipping_transport_cost')) {
+      supportsExpenseColumns = false
+      const fallback = await supabase
+        .from('purchases')
+        .select('id, supplier_id, supplier_name, supplier_document, invoice_number, purchase_date, received_date, status, payment_method, payment_status, amount_paid, balance_due, subtotal, tax_total, discount_total, other_expenses, total, cost_rule, notes, created_at, purchase_items(id, product_id, product_name, sku, quantity, requested_quantity, received_quantity, unit_cost, discount, tax_amount, other_expense_unit, real_unit_cost, previous_avg_cost, new_avg_cost, total)')
+        .eq('store_id', currentStoreId)
+        .order('created_at', { ascending: false })
+        .limit(40)
+      purchasesData = fallback.data
+      purchasesError = fallback.error
+    } else {
+      purchasesData = purchasesWithExpenses.data
+      purchasesError = purchasesWithExpenses.error
     }
+    setSupportsPurchaseExpenseColumns(supportsExpenseColumns)
 
-    if (!suppliersResponse.ok) {
-      alert(
-        'Error cargando suplidores: ' +
-          (suppliersData?.error || 'Error desconocido.')
-      )
-    }
+    if (productsError) alert('Error cargando productos: ' + productsError.message)
+    if (suppliersError) alert('Error cargando suplidores: ejecuta primero el SQL de compras en Supabase.')
+    if (purchasesError) alert('Error cargando compras: ejecuta primero el SQL de compras en Supabase.')
 
-    if (!purchasesResponse.ok) {
-      alert(
-        'Error cargando compras: ' +
-          (purchasesData?.error || 'Error desconocido.')
-      )
-    }
-
-    const normalizedSuppliers = Array.isArray(suppliersData)
-      ? suppliersData.map((supplier) => ({
-          ...supplier,
-          commercial_name: supplier.name || '',
-          document: supplier.rnc || null,
-        }))
-      : []
-
-    const normalizedPurchases = Array.isArray(purchasesData)
-      ? purchasesData.map((purchase) => ({
-          ...purchase,
-
-          supplier_name:
-            purchase.supplier_name || null,
-
-          supplier_document: null,
-
-          purchase_date:
-            purchase.created_at || null,
-
-          received_date:
-            purchase.received_at || null,
-
-          payment_method: null,
-          payment_status: null,
-          amount_paid: 0,
-
-          balance_due:
-            purchase.status === 'received'
-              ? 0
-              : Number(purchase.total || 0),
-
-          tax_total:
-            Number(purchase.tax || 0),
-
-          discount_total: 0,
-          other_expenses: 0,
-          shipping_transport_cost: 0,
-          expense_notes: null,
-
-          cost_rule: 'weighted_average',
-          notes: null,
-
-          purchase_items: [],
-        }))
-      : []
-
-    setSupportsPurchaseExpenseColumns(false)
-
-    setProducts(
-      Array.isArray(productsData)
-        ? productsData
-        : []
-    )
-
-    setSuppliers(
-      normalizedSuppliers as Supplier[]
-    )
-
-    setPurchases(
-      normalizedPurchases as Purchase[]
-    )
-  } catch (error) {
-    console.error('Error cargando Compras:', error)
-
-    alert(
-      'No se pudieron cargar los datos de Compras.'
-    )
-
-    setProducts([])
-    setSuppliers([])
-    setPurchases([])
-  } finally {
+    setProducts(productsData || [])
+    setSuppliers((suppliersData as Supplier[]) || [])
+    setPurchases((purchasesData as Purchase[]) || [])
     setLoading(false)
   }
-}
 
   const activeProducts = products.filter((product) => product.active !== false)
   const filteredProducts = useMemo(() => {
@@ -356,203 +277,126 @@ export default function ComprasPage() {
   }
 
   async function ensureSupplier() {
-  if (!storeId) {
-    throw new Error('Este usuario no tiene una tienda asignada.')
-  }
-
-  const normalizedDocument = supplierDocument
-    .replace(/[^0-9A-Za-z]/g, '')
-    .toUpperCase()
-
-  const existing = suppliers.find((supplier) =>
-    (
-      normalizedDocument &&
-      (supplier.document || '')
-        .replace(/[^0-9A-Za-z]/g, '')
-        .toUpperCase() === normalizedDocument
-    ) ||
-    supplier.commercial_name.trim().toLowerCase() ===
-      supplierName.trim().toLowerCase()
-  )
-
-  if (existing) return existing.id
-
-  const response = await fetch('/api/suppliers', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      name: supplierName.trim(),
-      rnc: supplierDocument.trim() || null,
-      phone: supplierPhone.trim() || null,
-    }),
-  })
-
-  const data = await response.json().catch(() => null)
-
-  if (!response.ok) {
-    throw new Error(
-      data?.error || 'No se pudo crear el suplidor.'
+    if (!storeId) throw new Error('Este usuario no tiene una tienda asignada.')
+    const normalizedDocument = supplierDocument.replace(/[^0-9A-Za-z]/g, '').toUpperCase()
+    const existing = suppliers.find((supplier) =>
+      (normalizedDocument && (supplier.document || '').replace(/[^0-9A-Za-z]/g, '').toUpperCase() === normalizedDocument) ||
+      supplier.commercial_name.trim().toLowerCase() === supplierName.trim().toLowerCase()
     )
+    if (existing) return existing.id
+    const { data, error } = await supabase.from('suppliers').insert({
+      store_id: storeId,
+      commercial_name: supplierName.trim(),
+      document: supplierDocument.trim() || null,
+      phone: supplierPhone.trim() || null,
+      active: true,
+    }).select('id').single()
+    if (error) throw error
+    await logAudit({ storeId, module: 'compras', action: 'supplier.create', entityType: 'supplier', entityId: data.id, summary: `Suplidor creado: ${supplierName.trim()}.` })
+    return data.id as string
   }
-
-  await logAudit({
-    storeId,
-    module: 'compras',
-    action: 'supplier.create',
-    entityType: 'supplier',
-    entityId: data.id,
-    summary: `Suplidor creado: ${supplierName.trim()}.`,
-  })
-
-  return data.id as string
-}
 
   async function savePurchase(status: 'draft' | 'pending') {
-  if (!storeId) {
-    return alert('Este usuario no tiene una tienda asignada.')
-  }
+    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
+    if (cart.length === 0) return alert('Agrega productos a la compra.')
+    if (!supplierName.trim()) return alert('Escribe el nombre del suplidor.')
+    if (!invoiceNumber.trim()) return alert('Escribe el numero de factura del suplidor.')
 
-  if (cart.length === 0) {
-    return alert('Agrega productos a la compra.')
-  }
-
-  if (!supplierName.trim()) {
-    return alert('Escribe el nombre del suplidor.')
-  }
-
-  if (!invoiceNumber.trim()) {
-    return alert('Escribe el numero de factura del suplidor.')
-  }
-
-  setSaving(true)
-
-  try {
-    const supplierId = await ensureSupplier()
-
-    const purchaseItems = cart.map((item) => ({
-      productId: item.id,
-      productName: item.name,
-      quantity: Number(item.quantity),
-      unitCost: Number(item.unitCost),
-      tax: Number(item.taxAmount || 0),
-      total:
-        Number(item.quantity) * Number(item.unitCost) -
-        Number(item.discount || 0) +
-        Number(item.taxAmount || 0),
-    }))
-
-    const response = await fetch('/api/purchases', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        supplierId,
-        invoiceNumber: invoiceNumber.trim(),
-        subtotal: Number(subtotal),
-        tax: Number(taxTotal),
-        total: Number(total),
-        items: purchaseItems,
-      }),
-    })
-
-    const data = await response.json().catch(() => null)
-
-    if (!response.ok) {
-      throw new Error(
-        data?.error || 'No se pudo registrar la compra.'
-      )
-    }
-
-    await logAudit({
-      storeId,
-      module: 'compras',
-      action: 'purchase.create',
-      entityType: 'purchase',
-      entityId: data.id,
-      summary: `Compra guardada como ${status}: ${invoiceNumber.trim()}.`,
-      metadata: {
+    setSaving(true)
+    try {
+      const supplierId = await ensureSupplier()
+      const purchasePayload: Record<string, unknown> = {
+        store_id: storeId,
+        supplier_id: supplierId,
+        supplier_name: supplierName.trim(),
+        supplier_document: supplierDocument.trim() || null,
+        invoice_number: invoiceNumber.trim(),
+        purchase_date: purchaseDate,
+        received_date: receivedDate || null,
+        subtotal,
+        tax_total: taxTotal,
+        discount_total: discountTotal,
+        other_expenses: otherExpenses,
         total,
-        items: cart.length,
-      },
-    })
-
-    clearForm()
-    await loadData()
-  } catch (error) {
-    alert(
-      'Error registrando compra: ' +
-        (error instanceof Error
-          ? error.message
-          : String(error))
-    )
-  } finally {
-    setSaving(false)
-  }
-}
-
-  async function receivePurchase(
-  purchase: Purchase,
-  partial = false
-) {
-  if (!storeId) {
-    return alert('Este usuario no tiene una tienda asignada.')
-  }
-
-  if (partial) {
-    alert(
-      'La recepción parcial todavía no está disponible en el backend PostgreSQL nuevo.'
-    )
-    return
-  }
-
-  const confirmed = confirm(
-    'Confirmar recepción de mercancía? Esto aumentará el inventario y recalculará el costo promedio.'
-  )
-
-  if (!confirmed) return
-
-  setReceivingId(purchase.id)
-
-  try {
-    const response = await fetch(
-      `/api/purchases/${encodeURIComponent(purchase.id)}/receive`,
-      {
-        method: 'POST',
+        payment_method: paymentMethod,
+        payment_status: paymentStatus,
+        amount_paid: paidAmount,
+        balance_due: balanceDue,
+        status,
+        cost_rule: 'weighted_average',
+        notes: notes.trim() || null,
       }
-    )
+      if (supportsPurchaseExpenseColumns) {
+        purchasePayload.shipping_transport_cost = shippingTransport
+        purchasePayload.expense_notes = expenseNotes.trim() || null
+      }
+      const { data: purchase, error: purchaseError } = await supabase.from('purchases').insert(purchasePayload).select('id').single()
+      if (purchaseError) throw purchaseError
 
-    const data = await response.json().catch(() => null)
+      const purchaseItems = cart.map((item) => {
+        const otherUnit = additionalExpenseUnit
+        return {
+          store_id: storeId,
+          purchase_id: purchase.id,
+          product_id: item.id,
+          product_name: item.name,
+          sku: item.sku,
+          quantity: item.quantity,
+          requested_quantity: item.quantity,
+          received_quantity: 0,
+          unit_cost: item.unitCost,
+          discount: item.discount,
+          tax_amount: item.taxAmount,
+          other_expense_unit: otherUnit,
+          real_unit_cost: item.unitCost + otherUnit,
+          total: item.quantity * item.unitCost - item.discount + item.taxAmount + (otherUnit * item.quantity),
+        }
+      })
+      const { error: itemsError } = await supabase.from('purchase_items').insert(purchaseItems)
+      if (itemsError) throw itemsError
 
-    if (!response.ok) {
-      throw new Error(
-        data?.error || 'No se pudo recibir la compra.'
-      )
+      await logAudit({ storeId, module: 'compras', action: 'purchase.create', entityType: 'purchase', entityId: purchase.id, summary: `Compra guardada como ${status}: ${invoiceNumber.trim()}.`, metadata: { total, items: cart.length } })
+      clearForm()
+      await loadData()
+    } catch (error) {
+      alert('Error registrando compra: ' + (error instanceof Error ? error.message : String(error)))
+    } finally {
+      setSaving(false)
     }
-
-    await logAudit({
-      storeId,
-      module: 'compras',
-      action: 'purchase.receive',
-      entityType: 'purchase',
-      entityId: purchase.id,
-      summary: `Compra recibida: ${purchase.invoice_number || purchase.id}.`,
-    })
-
-    await loadData()
-  } catch (error) {
-    alert(
-      'No pude recibir la compra: ' +
-        (error instanceof Error
-          ? error.message
-          : String(error))
-    )
-  } finally {
-    setReceivingId(null)
   }
-}
+
+  async function receivePurchase(purchase: Purchase, partial = false) {
+    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
+    if (partial) {
+      for (const item of purchase.purchase_items || []) {
+        const maxQuantity = Number(item.quantity || 0)
+        const answer = window.prompt(`Cantidad recibida de ${item.product_name} (maximo ${maxQuantity})`, String(maxQuantity))
+        if (answer === null) return
+        const quantity = Math.max(0, Math.min(maxQuantity, Number(answer || 0)))
+        const { error } = await supabase
+          .from('purchase_items')
+          .update({ received_quantity: quantity })
+          .eq('store_id', storeId)
+          .eq('id', item.id)
+        if (error) return alert('No pude preparar la recepción parcial: ' + error.message)
+      }
+    }
+    const message = partial
+      ? 'Confirmar recepción parcial? Esto aumentara solo las cantidades indicadas.'
+      : 'Confirmar recepción de mercancía? Esto aumentara el inventario y recalculara el costo promedio.'
+    if (!confirm(message)) return
+    setReceivingId(purchase.id)
+    try {
+      const { data: userData } = await supabase.auth.getUser()
+      const { error } = await supabase.rpc('receive_purchase', { p_store_id: storeId, p_purchase_id: purchase.id, p_user_id: userData.user?.id || null })
+      if (error) throw error
+      await loadData()
+    } catch (error) {
+      alert('No pude recibir la compra: ' + (error instanceof Error ? error.message : String(error)))
+    } finally {
+      setReceivingId(null)
+    }
+  }
 
   function buildPurchaseExportRows(): PurchaseExportRow[] {
     return purchases.flatMap((purchase) => (purchase.purchase_items || []).map((item, itemIndex) => ({
@@ -682,7 +526,7 @@ export default function ComprasPage() {
         {purchases.length === 0 ? <p className="p-5 text-zinc-500">Todavía no hay compras registradas.</p> : <div className="divide-y divide-zinc-100">{purchases.map((purchase) => <div key={purchase.id} className="grid grid-cols-1 gap-4 p-5 xl:grid-cols-[1fr_160px_160px_190px]"><div><div className="flex flex-wrap items-center gap-2"><h3 className="font-black text-zinc-950">{purchase.supplier_name || 'Suplidor sin nombre'}</h3><span className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-bold text-zinc-600">{purchase.invoice_number || `#${purchase.id.slice(0, 8).toUpperCase()}`}</span><span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">{statusLabel(purchase.status)}</span></div><p className="mt-1 text-sm text-zinc-500">{formatDateTime(purchase.created_at)}</p><p className="mt-2 text-sm text-zinc-600">{(purchase.purchase_items || []).map((item) => `${item.quantity} x ${item.product_name}`).join(' / ') || 'Sin detalle'}</p></div><div><p className="text-sm text-zinc-500">Fecha compra</p><p className="font-bold">{purchase.purchase_date}</p></div><div className="text-left xl:text-right"><p className="text-sm text-zinc-500">Total</p><p className="text-xl font-black text-emerald-700">{formatMoney(purchase.total)}</p></div><div className="flex items-center xl:justify-end">{purchase.status !== 'received' && purchase.status !== 'cancelled' && purchase.status !== 'partially_received' ? <div className="flex flex-col gap-2"><button type="button" onClick={() => void receivePurchase(purchase)} disabled={receivingId === purchase.id} className="rounded-xl bg-zinc-950 px-4 py-3 font-bold text-white hover:bg-zinc-800 disabled:opacity-60">{receivingId === purchase.id ? 'Recibiendo...' : 'Recibir completa'}</button><button type="button" onClick={() => void receivePurchase(purchase, true)} disabled={receivingId === purchase.id} className="rounded-xl border border-zinc-300 bg-white px-4 py-3 font-bold text-zinc-700 hover:bg-zinc-100 disabled:opacity-60">Recepción parcial</button></div> : <span className="rounded-xl bg-zinc-100 px-4 py-3 text-sm font-bold text-zinc-600">Sin acciones</span>}</div></div>)}</div>}
       </section>
 
-      <ImportModal open={importModalOpen} title="Importación de compras" templateName="compras-shopdesk" preview={importPreview} loading={importLoading} committing={importCommitting} mode={importMode} allowBlankClear={importAllowBlankClear} onModeChange={(mode) => { setImportMode(mode); setImportPreview(null); setImportResult(null) }} onAllowBlankClearChange={setImportAllowBlankClear} onFile={(file) => void handlePurchasesImportFile(file)} onConfirm={() => void confirmPurchasesImport()} onClose={() => setImportModalOpen(false)} onDownloadTemplate={() => void exportPurchases({ rows: [], format: 'excel' })} result={importResult} />
+      <ImportModal open={importModalOpen} title="Importación de compras" templateName="compras-guatapo" preview={importPreview} loading={importLoading} committing={importCommitting} mode={importMode} allowBlankClear={importAllowBlankClear} onModeChange={(mode) => { setImportMode(mode); setImportPreview(null); setImportResult(null) }} onAllowBlankClearChange={setImportAllowBlankClear} onFile={(file) => void handlePurchasesImportFile(file)} onConfirm={() => void confirmPurchasesImport()} onClose={() => setImportModalOpen(false)} onDownloadTemplate={() => void exportPurchases({ rows: [], format: 'excel' })} result={importResult} />
       <ExportModal open={exportModalOpen} title="Exportar compras" format={exportFormat} onFormatChange={setExportFormat} onClose={() => setExportModalOpen(false)} onExport={handleExportPurchases}><p className="text-sm text-zinc-600">Exporta las compras registradas usando la misma plantilla que acepta Importación.</p></ExportModal>
     </AppShell>
   )

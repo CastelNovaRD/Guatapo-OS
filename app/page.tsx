@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import AppShell from '@/components/AppShell'
+import { supabase } from '@/lib/supabase'
+import { getCurrentStoreId } from '@/lib/store-context'
 import { formatMoney } from '@/lib/format'
 import {
   AlertTriangle,
@@ -10,6 +12,7 @@ import {
   ShoppingCart,
   TrendingUp,
   Truck,
+  Users,
 } from 'lucide-react'
 
 type Sale = {
@@ -17,7 +20,8 @@ type Sale = {
   total: number
   card_fee: number
   shipping_cost: number
-  net_received?: number
+  cooperative_commission_amount: number
+  net_received: number
   created_at: string
   invoice_number: string | null
 }
@@ -43,38 +47,51 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [period, setPeriod] = useState<'day' | 'month' | 'year'>('day')
 
+  useEffect(() => {
+    loadDashboard()
+  }, [])
+
   async function loadDashboard() {
     setLoading(true)
-    try {
-      const response = await fetch('/api/dashboard')
-      const payload: unknown = await response.json().catch(() => null)
 
-      if (!response.ok || !payload || typeof payload !== 'object') {
-        const message = payload && typeof payload === 'object' && 'error' in payload
-          ? String(payload.error)
-          : 'No se pudo cargar el dashboard.'
-        console.error(message)
-        return
-      }
+    const storeId = await getCurrentStoreId()
 
-      const data = payload as {
-        sales?: Sale[]
-        saleItems?: SaleItem[]
-        products?: Product[]
-      }
-      setSales(Array.isArray(data.sales) ? data.sales : [])
-      setSaleItems(Array.isArray(data.saleItems) ? data.saleItems : [])
-      setProducts(Array.isArray(data.products) ? data.products : [])
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : 'No se pudo cargar el dashboard.')
-    } finally {
+    if (!storeId) {
       setLoading(false)
+      return
     }
-  }
 
-  useEffect(() => {
-    void Promise.resolve().then(loadDashboard)
-  }, [])
+    const { data: salesData } = await supabase
+      .from('sales')
+      .select(
+        'id, total, card_fee, shipping_cost, cooperative_commission_amount, net_received, created_at, invoice_number'
+      )
+      .eq('store_id', storeId)
+      .order('created_at', { ascending: false })
+
+    const { data: productsData } = await supabase
+      .from('products')
+      .select('id, name, stock, active')
+      .eq('store_id', storeId)
+
+    const nextSales = salesData || []
+    const saleIds = nextSales.map((sale) => sale.id)
+
+    if (saleIds.length) {
+      const { data: itemsData } = await supabase
+        .from('sale_items')
+        .select('sale_id, quantity, cost, total')
+        .in('sale_id', saleIds)
+
+      setSaleItems(itemsData || [])
+    } else {
+      setSaleItems([])
+    }
+
+    setSales(nextSales)
+    setProducts(productsData || [])
+    setLoading(false)
+  }
 
   function getPeriodSales() {
     const now = new Date()
@@ -110,7 +127,11 @@ export default function DashboardPage() {
         )
       }, 0)
 
-    return itemsProfit - Number(sale?.card_fee || 0)
+    return (
+      itemsProfit -
+      Number(sale?.card_fee || 0) -
+      Number(sale?.cooperative_commission_amount || 0)
+    )
   }
 
   const selectedSales = getPeriodSales()
@@ -140,6 +161,11 @@ export default function DashboardPage() {
     0
   )
 
+  const cooperativeFeesSelected = selectedSales.reduce(
+    (sum, sale) => sum + Number(sale.cooperative_commission_amount || 0),
+    0
+  )
+
   const currentYear = new Date().getFullYear()
   const chartData = buildDashboardChartData(sales, period)
 
@@ -160,7 +186,7 @@ export default function DashboardPage() {
     <AppShell>
       <div className="mb-8">
         <h2 className="text-3xl font-bold">Dashboard</h2>
-        <p className="text-zinc-500">Resumen general de ShopDesk OS</p>
+        <p className="text-zinc-500">Resumen general de Guatapo OS</p>
       </div>
 
       {loading ? (
@@ -218,7 +244,7 @@ export default function DashboardPage() {
                     onClick={() => setPeriod(option)}
                     className={`rounded-lg px-5 py-2 font-bold ${
                       period === option
-                        ? 'bg-castelnova-500 text-white'
+                        ? 'bg-emerald-500 text-white'
                         : 'text-zinc-700 hover:bg-white'
                     }`}
                   >
@@ -242,7 +268,7 @@ export default function DashboardPage() {
                     title={formatMoney(item.amount)}
                     className={`w-full rounded-t-lg ${
                       item.label === bestChartPoint.label
-                        ? 'bg-castelnova-500'
+                        ? 'bg-emerald-500'
                         : 'bg-zinc-300'
                     }`}
                     style={{
@@ -260,17 +286,24 @@ export default function DashboardPage() {
               ))}
             </div>
 
-            <p className="mt-3 text-sm font-semibold text-castelnova-700">
+            <p className="mt-3 text-sm font-semibold text-emerald-700">
               Mayor venta en {chartTitle(period, currentYear)}:{' '}
               {bestChartPoint.label} con {formatMoney(bestChartPoint.amount)}
             </p>
           </div>
 
-          <div className="mt-6 grid grid-cols-1 gap-5 md:grid-cols-2">
+          <div className="mt-6 grid grid-cols-1 gap-5 md:grid-cols-3">
             <Card
               title="Comisión de tarjeta"
               value={formatMoney(cardFeesSelected)}
               icon={<CreditCard />}
+              danger
+            />
+
+            <Card
+              title="Comisión de cooperativas"
+              value={formatMoney(cooperativeFeesSelected)}
+              icon={<Users />}
               danger
             />
 
@@ -477,7 +510,7 @@ function Card({
 
   return (
     <div className="min-h-[136px] min-w-0 overflow-hidden rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-      <div className="mb-4 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-castelnova-50 text-castelnova-700">
+      <div className="mb-4 flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600">
         {icon}
       </div>
 
@@ -517,6 +550,3 @@ function AlertItem({
     </div>
   )
 }
-
-
-

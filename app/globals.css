@@ -1,4 +1,4 @@
-﻿@import "tailwindcss";
+@import "tailwindcss";
 
 :root {
   --background: #ffffff;
@@ -8,19 +8,6 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-
-  /* CastelNova OS - identidad oficial */
-  --color-castelnova-50: #fff1f1;
-  --color-castelnova-100: #ffe0e0;
-  --color-castelnova-200: #ffc7c7;
-  --color-castelnova-300: #ffa0a0;
-  --color-castelnova-400: #ff6969;
-  --color-castelnova-500: #d92d2d;
-  --color-castelnova-600: #a90404;
-  --color-castelnova-700: #8f0303;
-  --color-castelnova-800: #760707;
-  --color-castelnova-900: #620d0d;
-
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }

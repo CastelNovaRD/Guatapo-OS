@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ShopDesk OS",
-  description: "Sistema administrativo de CastelNova",
+  title: "Guatapo OS",
+  description: "Sistema administrativo Guatapo",
 };
 
 export default function RootLayout({

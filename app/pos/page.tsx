@@ -2,12 +2,12 @@
 
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { supabase } from '@/lib/supabase'
 import AppShell from '@/components/AppShell'
 import { formatMoney } from '@/lib/format'
 import { getCurrentStoreId } from '@/lib/store-context'
 import { lookupDgiiContributor } from '@/lib/dgii-contributors'
 import { productMatchesSearch } from '@/lib/product-search'
-import { resolveProductImageUrl } from '@/lib/product-images'
 import { logAudit } from '@/lib/audit'
 import { calculateCashRegisterTotals } from '@/lib/cash-register'
 import {
@@ -23,7 +23,6 @@ import {
   Trash2,
   Wallet,
 } from 'lucide-react'
-import { isFiscalSalesEnabledForPlan, normalizeHubConfig } from '@/lib/hub-config'
 
 type Product = {
   id: string
@@ -31,7 +30,6 @@ type Product = {
   sku: string | null
   barcode: string | null
   image_url: string | null
-  product_image_id?: string | null
   sale_price: number
   cost: number
   stock: number
@@ -206,12 +204,12 @@ function notifyInventoryUpdated() {
   const timestamp = String(Date.now())
 
   try {
-    window.localStorage.setItem('shopdesk_inventory_updated_at', timestamp)
+    window.localStorage.setItem('guatapo_inventory_updated_at', timestamp)
   } catch {
     // localStorage puede fallar en modo privado; el evento local mantiene la app actualizada.
   }
 
-  window.dispatchEvent(new CustomEvent('shopdesk:inventory-updated', { detail: timestamp }))
+  window.dispatchEvent(new CustomEvent('guatapo:inventory-updated', { detail: timestamp }))
 }
 
 export default function POSPage() {
@@ -237,7 +235,6 @@ export default function POSPage() {
   const [fiscalLookupValue, setFiscalLookupValue] = useState('')
   const [shippingCost, setShippingCost] = useState('')
   const [fiscalSale, setFiscalSale] = useState(false)
-  const [fiscalSalesEnabled, setFiscalSalesEnabled] = useState(false)
   const [fiscalPaymentPending, setFiscalPaymentPending] = useState(false)
   const [taxPercent, setTaxPercent] = useState('0')
   const [fiscalReceiptType, setFiscalReceiptType] = useState('B01')
@@ -260,30 +257,6 @@ export default function POSPage() {
   const [creditNoteRemainderMethodId, setCreditNoteRemainderMethodId] = useState('')
   const [creditNoteRemainderCashReceived, setCreditNoteRemainderCashReceived] = useState('')
   const [productImages, setProductImages] = useState<ProductImage[]>([])
-
-  useEffect(() => {
-    let active = true
-
-    async function loadFiscalCapability() {
-      try {
-        const response = await fetch('/api/hub/config', { cache: 'no-store' })
-        if (!response.ok) throw new Error('No se pudo cargar la configuración del plan.')
-
-        const enabled = isFiscalSalesEnabledForPlan(normalizeHubConfig(await response.json()))
-        if (!active) return
-
-        setFiscalSalesEnabled(enabled)
-        if (!enabled) setFiscalSale(false)
-      } catch {
-        if (!active) return
-        setFiscalSalesEnabled(false)
-        setFiscalSale(false)
-      }
-    }
-
-    void loadFiscalCapability()
-    return () => { active = false }
-  }, [])
 
   const [openCash, setOpenCash] = useState<CashRegister | null>(null)
   const [openingAmount, setOpeningAmount] = useState('')
@@ -325,276 +298,214 @@ export default function POSPage() {
     await Promise.all([loadCash(currentStoreId), loadData(currentStoreId)])
   }
 
-  async function loadCash(
-  storeId?: string,
-  options: { showLoading?: boolean } = {}
-) {
-  const showLoading = options.showLoading ?? true
+  async function loadCash(currentStoreId = storeId, options: { showLoading?: boolean } = {}) {
+    if (!currentStoreId) return
 
-  if (showLoading) setCashLoading(true)
+    const showLoading = options.showLoading ?? cashLoading
+    if (showLoading) setCashLoading(true)
 
-  try {
-    const response = await fetch('/api/cash-registers?status=open', {
-      method: 'GET',
-      cache: 'no-store',
-    })
+    const { data, error } = await supabase
+      .from('cash_registers')
+      .select('id, opening_amount, opened_at, status')
+      .eq('store_id', currentStoreId)
+      .eq('status', 'open')
+      .order('opened_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
 
-    if (!response.ok) {
-      const result = await response.json().catch(() => null)
-      throw new Error(result?.error || 'No se pudo consultar la caja.')
+    if (error) {
+      console.warn('[Caja] Error cargando caja abierta en POS:', error.message)
+      if (showLoading) setCashLoading(false)
+      return alert('No se pudo verificar la caja. Reintentando...')
     }
 
-    const registers = await response.json()
-    const currentCash = Array.isArray(registers) ? registers[0] || null : null
-
-    setOpenCash(currentCash)
-  } catch (error) {
-    console.error('Error cargando caja:', error)
-    setOpenCash(null)
-  } finally {
+    setOpenCash(data || null)
     if (showLoading) setCashLoading(false)
   }
-}
 
   async function loadData(currentStoreId = storeId) {
-  if (!currentStoreId) return
-
-  try {
-    const [
-      methodsResponse,
-      customersResponse,
-      categoriesResponse,
-      settingsResponse,
-    ] = await Promise.all([
-      fetch('/api/payment-methods', {
-        cache: 'no-store',
-      }),
-      fetch('/api/customers?active=true&limit=200', {
-        cache: 'no-store',
-      }),
-      fetch('/api/categories', {
-        cache: 'no-store',
-      }),
-      fetch('/api/store-settings', {
-        cache: 'no-store',
-      }),
-    ])
+    if (!currentStoreId) return
 
     const [
-      methodsData,
-      customersData,
-      categoriesData,
-      storeData,
+      { data: methodsData, error: methodsError },
+      { data: customersData },
+      { data: categoriesData },
+      { data: storeData },
     ] = await Promise.all([
-      methodsResponse.ok ? methodsResponse.json() : Promise.resolve([]),
-      customersResponse.ok ? customersResponse.json() : Promise.resolve([]),
-      categoriesResponse.ok ? categoriesResponse.json() : Promise.resolve([]),
-      settingsResponse.ok ? settingsResponse.json() : Promise.resolve(null),
+      supabase
+        .from('payment_methods')
+        .select('id, name, fee_percent')
+        .eq('active', true)
+        .order('fee_percent'),
+      supabase
+        .from('customers')
+        .select('id, full_name, phone, cedula')
+        .eq('store_id', currentStoreId)
+        .order('full_name'),
+      supabase
+        .from('categories')
+        .select('id, name')
+        .eq('store_id', currentStoreId)
+        .eq('active', true)
+        .order('name'),
+      supabase
+        .from('stores')
+        .select('pos_featured_products_limit')
+        .eq('id', currentStoreId)
+        .maybeSingle(),
     ])
 
-    const configuredLimit = Number(
-      (storeData as { pos_featured_products_limit?: number } | null)
-        ?.pos_featured_products_limit || 10
-    )
-
-    const safeLimit = [5, 10, 20, 50].includes(configuredLimit)
-      ? configuredLimit
-      : 10
-
+    const configuredLimit = Number((storeData as { pos_featured_products_limit?: number } | null)?.pos_featured_products_limit || 10)
+    const safeLimit = [5, 10, 20, 50].includes(configuredLimit) ? configuredLimit : 10
     setPosFeaturedProductsLimit(safeLimit)
 
     const basePaymentMethods =
-      Array.isArray(methodsData) && methodsData.length
-        ? methodsData
-        : FALLBACK_PAYMENT_METHODS
-
-    const hasCreditNoteMethod = basePaymentMethods.some(
-      (method: { id: string; name: string }) =>
-        method.id === 'virtual:credit-note' ||
-        method.name.toLowerCase().includes('nota de credito')
+      methodsError || !methodsData?.length ? FALLBACK_PAYMENT_METHODS : methodsData
+    const hasCreditNoteMethod = basePaymentMethods.some((method) =>
+      method.id === 'virtual:credit-note' || method.name.toLowerCase().includes('nota de credito')
     )
-
     const nextPaymentMethods = hasCreditNoteMethod
       ? basePaymentMethods
-      : [
-          ...basePaymentMethods,
-          {
-            id: 'virtual:credit-note',
-            name: 'Nota de credito',
-            fee_percent: 0,
-          },
-        ]
+      : [...basePaymentMethods, { id: 'virtual:credit-note', name: 'Nota de credito', fee_percent: 0 }]
 
     setPaymentMethods(nextPaymentMethods)
-    setCustomers(
-      (Array.isArray(customersData) ? customersData : []) as ExistingCustomer[]
-    )
-    setProductCategories(
-      Array.isArray(categoriesData) ? categoriesData : []
-    )
+    setCustomers((customersData || []) as ExistingCustomer[])
+    setProductCategories(categoriesData || [])
 
-    if (nextPaymentMethods.length && !paymentMethodId) {
-      setPaymentMethodId(nextPaymentMethods[0].id)
-    }
-
-    await loadPosProducts(
-      currentStoreId,
-      safeLimit,
-      { showLoading: products.length === 0 }
-    )
-  } catch (error) {
-    console.error('Error cargando datos del POS:', error)
+    if (nextPaymentMethods.length && !paymentMethodId) setPaymentMethodId(nextPaymentMethods[0].id)
+    await loadPosProducts(currentStoreId, safeLimit, { showLoading: products.length === 0 })
   }
-}
 
   async function loadPosProducts(
-  currentStoreId = storeId,
-  limit = posFeaturedProductsLimit,
-  options: { showLoading?: boolean } = {},
-  filters: { searchTerm?: string; category?: string } = {}
-) {
-  if (!currentStoreId) return
+    currentStoreId = storeId,
+    limit = posFeaturedProductsLimit,
+    options: { showLoading?: boolean } = {},
+    filters: { searchTerm?: string; category?: string } = {}
+  ) {
+    if (!currentStoreId) return
 
-  const fetchParams: PosProductsFetchParams = {
-    storeId: currentStoreId,
-    limit,
-    searchTerm: filters.searchTerm ?? debouncedSearch,
-    category: filters.category ?? categoryFilter,
-    options,
-  }
-
-  if (productsFetchInFlightRef.current) {
-    pendingProductsFetchRef.current = fetchParams
-    return
-  }
-
-  productsFetchInFlightRef.current = true
-  const showLoading = options.showLoading ?? products.length === 0
-
-  if (showLoading) setProductsLoading(true)
-
-  try {
-    const cleanSearch = fetchParams.searchTerm
-      .replace(/[%,_]/g, '')
-      .trim()
-
-    const params = new URLSearchParams()
-
-    params.set('active', 'true')
-    params.set('stockMin', '0.001')
-    params.set('limit', String(cleanSearch ? 100 : Math.max(limit, 50)))
-
-    if (cleanSearch) {
-      params.set('search', cleanSearch)
+    const fetchParams: PosProductsFetchParams = {
+      storeId: currentStoreId,
+      limit,
+      searchTerm: filters.searchTerm ?? debouncedSearch,
+      category: filters.category ?? categoryFilter,
+      options,
     }
 
-    const response = await fetch(`/api/products?${params.toString()}`, {
-      cache: 'no-store',
-    })
-
-    if (!response.ok) {
-      console.warn(
-        '[POS] Error cargando productos desde PostgreSQL:',
-        response.status
-      )
+    if (productsFetchInFlightRef.current) {
+      pendingProductsFetchRef.current = fetchParams
       return
     }
 
-    const rows = await response.json()
+    productsFetchInFlightRef.current = true
+    const showLoading = options.showLoading ?? products.length === 0
+    const activeCategoryFilter = fetchParams.category.trim()
+    if (showLoading) setProductsLoading(true)
 
-    const productsData: Product[] = (Array.isArray(rows) ? rows : [])
-      .map((row) => ({
-        id: row.id,
-        name: row.name,
-        sku: row.sku ?? null,
-        barcode: row.barcode ?? null,
-        image_url: row.image_url ?? null,
-        product_image_id: row.product_image_id ?? null,
-        sale_price: Number(row.sale_price || 0),
-        cost: Number(row.cost || 0),
-        stock: Number(row.stock || 0),
-        product_type: row.product_type_value ?? '',
-        category: row.category_name ?? null,
-        specs: row.specs ?? null,
-      }))
-      .filter((product) => {
-        if (!fetchParams.category.trim()) return true
-        return product.category === fetchParams.category.trim()
-      })
+    try {
+      const cleanSearch = fetchParams.searchTerm.replace(/[%,_]/g, '').trim()
+      let productsData: Product[] = []
 
-    const shouldApplyResult = !pendingProductsFetchRef.current
+      if (!cleanSearch && !activeCategoryFilter) {
+        const { data, error } = await supabase.rpc('get_pos_featured_products', {
+          p_store_id: currentStoreId,
+          p_limit: limit,
+        })
 
-    if (shouldApplyResult) {
-      setProducts(productsData)
+        if (!error && data) productsData = data as Product[]
 
-      setProductImages(
-        productsData
-          .filter((product) => Boolean(product.image_url && product.product_image_id))
-          .map((product) => ({
-            id: product.product_image_id as string,
-            product_id: product.id,
-            image_url: product.image_url as string,
-            is_primary: true,
-            sort_order: 0,
-          }))
-      )
-    }
-  } catch (error) {
-    console.error('[POS] Error cargando productos:', error)
-  } finally {
-    if (showLoading) setProductsLoading(false)
+        if (error) {
+          console.warn('[POS] Error cargando productos destacados, usando consulta directa:', error.message)
+          const { data: fallbackData, error: fallbackError } = await supabase
+            .from('products')
+            .select('id, name, sku, barcode, image_url, sale_price, cost, stock, product_type, category, specs')
+            .eq('store_id', currentStoreId)
+            .neq('active', false)
+            .gt('stock', 0)
+            .order('name')
+            .range(0, Math.max(0, limit - 1))
 
-    productsFetchInFlightRef.current = false
-
-    const pendingFetch = pendingProductsFetchRef.current
-
-    if (pendingFetch) {
-      pendingProductsFetchRef.current = null
-
-      void loadPosProducts(
-        pendingFetch.storeId,
-        pendingFetch.limit,
-        pendingFetch.options,
-        {
-          searchTerm: pendingFetch.searchTerm,
-          category: pendingFetch.category,
+          if (fallbackError) console.warn('[POS] Error cargando productos:', fallbackError.message)
+          productsData = fallbackData || []
         }
-      )
+      } else {
+        let query = supabase
+          .from('products')
+          .select('id, name, sku, barcode, image_url, sale_price, cost, stock, product_type, category, specs')
+          .eq('store_id', currentStoreId)
+          .neq('active', false)
+          .gt('stock', 0)
+
+        if (cleanSearch) {
+          query = query.or(`name.ilike.%${cleanSearch}%,sku.ilike.%${cleanSearch}%,barcode.ilike.%${cleanSearch}%,category.ilike.%${cleanSearch}%,product_type.ilike.%${cleanSearch}%`)
+        }
+
+        if (activeCategoryFilter) query = query.eq('category', activeCategoryFilter)
+
+        const resultLimit = cleanSearch ? 100 : Math.max(50, limit)
+        const { data, error } = await query.order('name').range(0, resultLimit - 1)
+        if (error) console.warn('[POS] Error buscando productos:', error.message)
+        productsData = data || []
+      }
+
+      const shouldApplyResult = !pendingProductsFetchRef.current
+      if (shouldApplyResult) setProducts(productsData)
+
+      const productIds = productsData.map((product) => product.id)
+      if (shouldApplyResult && productIds.length > 0) {
+        const { data: imagesData, error: imagesError } = await supabase
+          .from('product_images')
+          .select('id, product_id, image_url, is_primary, sort_order')
+          .eq('store_id', currentStoreId)
+          .in('product_id', productIds)
+          .order('sort_order')
+
+        if (imagesError) console.warn('[POS] Error cargando imagenes de productos:', imagesError.message)
+        setProductImages(imagesData || [])
+      } else if (shouldApplyResult && showLoading) {
+        setProductImages([])
+      }
+    } finally {
+      if (showLoading) setProductsLoading(false)
+      productsFetchInFlightRef.current = false
+
+      const pendingFetch = pendingProductsFetchRef.current
+      if (pendingFetch) {
+        pendingProductsFetchRef.current = null
+        void loadPosProducts(
+          pendingFetch.storeId,
+          pendingFetch.limit,
+          pendingFetch.options,
+          { searchTerm: pendingFetch.searchTerm, category: pendingFetch.category }
+        )
+      }
     }
   }
-}
 
   async function loadNextAvailableNcf(type = fiscalReceiptType) {
-  if (!storeId) return
+    if (!storeId) return
 
-  setLoadingNcf(true)
+    setLoadingNcf(true)
 
-  try {
-    const response = await fetch(
-      `/api/ncf/next?type=${encodeURIComponent(type)}`,
-      { cache: 'no-store' }
-    )
+    const { data, error } = await supabase
+      .from('ncf_receipts')
+      .select('id, ncf')
+      .eq('store_id', storeId)
+      .eq('receipt_type', type)
+      .neq('status', 'used')
+      .order('ncf', { ascending: true })
+      .limit(1)
+      .maybeSingle()
 
-    if (!response.ok) {
+    setLoadingNcf(false)
+
+    if (error) {
       setAvailableNcf(null)
-      return alert(
-        'No pude cargar comprobantes disponibles. Revisa Ventas > Comprobantes.'
-      )
+      return alert('No pude cargar comprobantes disponibles. Revisa Ventas > Comprobantes.')
     }
 
-    const data = await response.json()
     setAvailableNcf(data || null)
-  } catch (error) {
-    console.error('Error cargando NCF:', error)
-    setAvailableNcf(null)
-
-    alert(
-      'No pude cargar comprobantes disponibles. Revisa Ventas > Comprobantes.'
-    )
-  } finally {
-    setLoadingNcf(false)
   }
-}
 
 function getProductMainImage(product: Product) {
   const images = productImages.filter(
@@ -603,92 +514,167 @@ function getProductMainImage(product: Product) {
 
   const primary = images.find((img) => img.is_primary)
 
-  return (
-    resolveProductImageUrl(primary || images[0]) ||
-    resolveProductImageUrl(
-      product.product_image_id && product.image_url
-        ? { id: product.product_image_id, image_url: product.image_url }
-        : null
-    ) ||
-    product.image_url
-  )
+  return primary?.image_url || images[0]?.image_url || product.image_url
 }
 
   async function openRegister() {
-  const amount = Number(openingAmount || 0)
+    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
 
-  if (!Number.isFinite(amount) || amount < 0) {
-    return alert('El efectivo inicial no es válido.')
-  }
-
-  try {
-    const response = await fetch('/api/cash-registers', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        openingAmount: amount,
-      }),
+    const { error } = await supabase.from('cash_registers').insert({
+      store_id: storeId,
+      opening_amount: Number(openingAmount || 0),
+      status: 'open',
     })
 
-    const result = await response.json().catch(() => null)
-
-    if (!response.ok) {
-      return alert(result?.error || 'No se pudo abrir la caja.')
-    }
-
-    setOpenCash(result)
-    setOpeningAmount('')
+    if (error) return alert('Error abriendo caja: ' + error.message)
 
     await logAudit({
       storeId,
-      module: 'pos',
-      action: 'cash_register.open',
+      module: 'caja',
+      action: 'open',
       entityType: 'cash_register',
-      entityId: result.id,
-      summary: `Caja abierta con ${amount}.`,
-      afterData: {
-        openingAmount: amount,
-      },
+      summary: 'Caja abierta con ' + String(openingAmount || 0) + '.',
+      afterData: { openingAmount: Number(openingAmount || 0) },
     })
-  } catch (error) {
-    console.error('Error abriendo caja:', error)
-    alert('No se pudo abrir la caja.')
-  }
-}
 
-   async function calculateCloseSummary(
-    countedCash: number
-  ): Promise<CloseSummary | null> {
+    setOpeningAmount('')
+    await loadCash()
+  }
+
+  async function calculateCloseSummary(countedCash: number): Promise<CloseSummary | null> {
     if (!openCash || !storeId) return null
 
-    try {
-      const params = new URLSearchParams({
-        countedCash: String(countedCash),
-      })
+    const { data: currentCash, error: cashError } = await supabase
+      .from('cash_registers')
+      .select('id, status, opening_amount')
+      .eq('store_id', storeId)
+      .eq('id', openCash.id)
+      .maybeSingle()
 
-      const response = await fetch(
-        `/api/cash-registers/${encodeURIComponent(openCash.id)}/summary?${params.toString()}`,
-        {
-          cache: 'no-store',
-        }
-      )
+    if (cashError) {
+      setCloseError('Error verificando caja: ' + cashError.message)
+      return null
+    }
 
-      const result = await response.json().catch(() => null)
+    if (!currentCash || currentCash.status !== 'open') {
+      setCloseError('Esta caja ya fue cerrada.')
+      return null
+    }
 
-      if (!response.ok) {
-        setCloseError(
-          result?.error || 'No se pudo calcular el resumen de caja.'
-        )
+    const { data: sales, error: salesError } = await supabase
+      .from('sales')
+      .select('id, total, card_fee, cash_received, cash_change, payment_method_id')
+      .eq('store_id', storeId)
+      .eq('cash_register_id', openCash.id)
+
+    if (salesError) {
+      setCloseError('Error cargando ventas: ' + salesError.message)
+      return null
+    }
+
+    const saleIds = sales?.map((sale) => sale.id) || []
+    let salePayments: SalePaymentRow[] = []
+
+    if (saleIds.length > 0) {
+      const { data: paymentRows, error: paymentRowsError } = await supabase
+        .from('sale_payments')
+        .select('sale_id, payment_method, amount, card_fee')
+        .eq('store_id', storeId)
+        .in('sale_id', saleIds)
+
+      if (!paymentRowsError) salePayments = paymentRows || []
+    }
+
+    const methodIds = Array.from(new Set((sales || []).map((sale) => sale.payment_method_id).filter(Boolean))) as string[]
+    const paymentMethodMap = new Map<string, string>()
+
+    if (methodIds.length > 0) {
+      const { data: methodRows } = await supabase
+        .from('payment_methods')
+        .select('id, name')
+        .in('id', methodIds)
+
+      ;(methodRows || []).forEach((method) => paymentMethodMap.set(method.id, method.name || ''))
+    }
+
+    let creditNoteRefunds: { sale_id: string | null; total: number; refund_method: string | null }[] = []
+
+    if (saleIds.length > 0) {
+      const { data: refundRows } = await supabase
+        .from('credit_notes')
+        .select('sale_id, total, refund_method')
+        .eq('store_id', storeId)
+        .in('sale_id', saleIds)
+
+      creditNoteRefunds = refundRows || []
+    }
+
+    let cashMovements: { movement_type: string | null; amount: number | null }[] = []
+
+    const { data: movementRows, error: movementError } = await supabase
+      .from('cash_movements')
+      .select('movement_type, amount')
+      .eq('store_id', storeId)
+      .eq('cash_register_id', openCash.id)
+
+    if (movementError) {
+      setCloseError('Error cargando movimientos de caja: ' + movementError.message)
+      return null
+    }
+
+    cashMovements = movementRows || []
+
+    let totalProfit = 0
+
+    if (saleIds.length > 0) {
+      const { data: items, error: itemsError } = await supabase
+        .from('sale_items')
+        .select('cost, quantity, total')
+        .in('sale_id', saleIds)
+
+      if (itemsError) {
+        setCloseError('Error calculando ganancias: ' + itemsError.message)
         return null
       }
 
-      return result as CloseSummary
-    } catch (error) {
-      console.error('Error calculando resumen de caja:', error)
-      setCloseError('No se pudo calcular el resumen de caja.')
-      return null
+      totalProfit =
+        items?.reduce((sum, item) => {
+          return (
+            sum +
+            (Number(item.total || 0) -
+              Number(item.cost || 0) * Number(item.quantity || 1))
+          )
+        }, 0) || 0
+    }
+
+    const cashTotals = calculateCashRegisterTotals({
+      openingAmount: Number(currentCash.opening_amount || 0),
+      countedCash,
+      sales: sales || [],
+      refunds: creditNoteRefunds,
+      movements: cashMovements,
+      payments: salePayments,
+      paymentMethods: paymentMethodMap,
+    })
+    const totalCardFee = cashTotals.totalCardFee
+
+    return {
+      cashId: openCash.id,
+      openingAmount: Number(currentCash.opening_amount || 0),
+      manualIn: 0,
+      manualOut: 0,
+      totalSales: cashTotals.expectedCash,
+      totalCardFee,
+      totalProfit: Math.max(0, totalProfit - totalCardFee),
+      difference: cashTotals.difference,
+      closingAmount: countedCash,
+      expectedCash: cashTotals.expectedCash,
+      cashSales: cashTotals.cashSales,
+      cardSales: cashTotals.cardSales,
+      transferSales: cashTotals.transferSales,
+      cashRefunds: cashTotals.cashRefunds,
+      cashWithdrawals: cashTotals.cashWithdrawals,
+      creditNotePayments: cashTotals.creditSales,
     }
   }
 
@@ -708,71 +694,55 @@ function getProductMainImage(product: Product) {
   }
 
   async function loadWithdrawalHistory() {
-  if (!openCash) return
+    if (!openCash || !storeId) return
 
-  setWithdrawalHistoryLoading(true)
-  setWithdrawalError('')
+    setWithdrawalHistoryLoading(true)
 
-  try {
-    const params = new URLSearchParams({
-      cashRegisterId: openCash.id,
-      type: 'withdrawal',
-    })
+    const { data, error } = await supabase
+      .from('cash_movements')
+      .select('id, user_id, amount, reason, notes, created_at')
+      .eq('store_id', storeId)
+      .eq('cash_register_id', openCash.id)
+      .eq('movement_type', 'withdrawal')
+      .order('created_at', { ascending: false })
+      .limit(25)
 
-    const response = await fetch(
-      `/api/cash-movements?${params.toString()}`,
-      {
-        cache: 'no-store',
-      }
-    )
-
-    const data = await response.json().catch(() => null)
-
-    if (!response.ok) {
+    if (error) {
       setWithdrawalHistory([])
-      setWithdrawalError(
-        'No se pudo cargar el historial de retiros: ' +
-          (data?.error || 'Error desconocido.')
-      )
+      setWithdrawalHistoryLoading(false)
+      setWithdrawalError('No se pudo cargar el historial de retiros: ' + error.message)
       return
     }
 
-    const rows = Array.isArray(data) ? data.slice(0, 25) : []
+    const rows = data || []
+    const userIds = Array.from(new Set(rows.map((row) => row.user_id).filter(Boolean))) as string[]
+    const employeeMap = new Map<string, string>()
+
+    if (userIds.length > 0) {
+      const { data: employeeRows } = await supabase
+        .from('employees')
+        .select('auth_user_id, full_name')
+        .eq('store_id', storeId)
+        .in('auth_user_id', userIds)
+
+      ;(employeeRows || []).forEach((employee) => {
+        if (employee.auth_user_id) employeeMap.set(employee.auth_user_id, employee.full_name || 'Empleado')
+      })
+    }
 
     setWithdrawalHistory(
-      rows.map((row) => {
-        const rawNotes =
-          typeof row.notes === 'string' ? row.notes : ''
-
-        const reasonMatch = rawNotes.match(
-          /(?:^|\n)Motivo:\s*(.*?)(?:\n|$)/
-        )
-
-        const notesMatch = rawNotes.match(
-          /(?:^|\n)Notas:\s*([\s\S]*)$/
-        )
-
-        return {
-          id: row.id,
-          user_id: row.created_by || null,
-          employeeName: 'Usuario del sistema',
-          created_at: row.created_at,
-          amount: Number(row.amount || 0),
-          reason: reasonMatch?.[1]?.trim() || '',
-          notes: notesMatch?.[1]?.trim() || null,
-        }
-      })
+      rows.map((row) => ({
+        id: row.id,
+        user_id: row.user_id || null,
+        employeeName: row.user_id ? employeeMap.get(row.user_id) || 'Usuario del sistema' : 'Usuario del sistema',
+        created_at: row.created_at,
+        amount: Number(row.amount || 0),
+        reason: row.reason || '',
+        notes: row.notes || null,
+      }))
     )
-  } catch (error) {
-    console.error('Error cargando historial de retiros:', error)
-    setWithdrawalHistory([])
-    setWithdrawalError(
-      'No se pudo cargar el historial de retiros.'
-    )
-  } finally {
     setWithdrawalHistoryLoading(false)
   }
-}
 
   async function saveWithdrawal() {
     if (!openCash || !storeId) return
@@ -807,35 +777,24 @@ function getProductMainImage(product: Product) {
       return
     }
 
-    const withdrawalDetails = [
-  `Motivo: ${reason}`,
-  withdrawalNotes.trim() ? `Notas: ${withdrawalNotes.trim()}` : '',
-]
-  .filter(Boolean)
-  .join('\n')
+    const { data: userData } = await supabase.auth.getUser()
+    const userId = userData.user?.id
 
-const response = await fetch('/api/cash-movements', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    cashRegisterId: openCash.id,
-    amount,
-    notes: withdrawalDetails,
-  }),
-})
+    const { error } = await supabase.from('cash_movements').insert({
+      store_id: storeId,
+      cash_register_id: openCash.id,
+      user_id: userId,
+      movement_type: 'withdrawal',
+      amount,
+      reason,
+      notes: withdrawalNotes.trim() || null,
+    })
 
-const result = await response.json().catch(() => null)
-
-if (!response.ok) {
-  setWithdrawalSaving(false)
-  setWithdrawalError(
-    'Error registrando retiro: ' +
-      (result?.error || 'No se pudo registrar el retiro.')
-  )
-  return
-}
+    if (error) {
+      setWithdrawalSaving(false)
+      setWithdrawalError('Error registrando retiro: ' + error.message)
+      return
+    }
 
     await logAudit({
       storeId,
@@ -917,33 +876,32 @@ if (!response.ok) {
       return
     }
 
-      const closeResponse = await fetch(
-      `/api/cash-registers/${encodeURIComponent(openCash.id)}`,
-      {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          closingAmount: counted,
-        }),
-      }
-    )
+    const { data: closedCash, error } = await supabase
+      .from('cash_registers')
+      .update({
+        closing_amount: counted,
+        total_sales: summary.expectedCash,
+        total_card_fee: summary.totalCardFee,
+        total_profit: summary.totalProfit,
+        difference: summary.difference,
+        status: 'closed',
+        closed_at: new Date().toISOString(),
+      })
+      .eq('store_id', storeId)
+      .eq('id', openCash.id)
+      .eq('status', 'open')
+      .select('id')
+      .maybeSingle()
 
-    const closedCash = await closeResponse.json().catch(() => null)
-
-    if (!closeResponse.ok) {
+    if (error) {
       setClosingProcessing(false)
+      setCloseError('Error cerrando caja: ' + error.message)
+      return
+    }
 
-      if (closeResponse.status === 409) {
-        setCloseError('Esta caja ya fue cerrada.')
-        return
-      }
-
-      setCloseError(
-        'Error cerrando caja: ' +
-          (closedCash?.error || 'No se pudo cerrar la caja.')
-      )
+    if (!closedCash) {
+      setClosingProcessing(false)
+      setCloseError('Esta caja ya fue cerrada.')
       return
     }
 
@@ -963,7 +921,7 @@ if (!response.ok) {
     setOpenCash(null)
     setClosingAmount('')
     setCart([])
-    window.dispatchEvent(new Event('shopdesk:cash-updated'))
+    window.dispatchEvent(new Event('guatapo:cash-updated'))
 
     if (printAfterClose) window.open(`/cuadres/${summary.cashId}/imprimir`, '_blank')
 
@@ -1019,17 +977,12 @@ if (!response.ok) {
     return sum + Math.max(0, itemTotal - discount)
   }, 0)
 
-  const discountAmount = cart.reduce(
-  (sum, item) => sum + Math.max(0, Number(item.discount || 0)),
-  0
-)
-
   const selectedPaymentMethod = paymentMethods.find(
     (method) => method.id === paymentMethodId
   )
 
   const selectedPaymentName = selectedPaymentMethod?.name?.toLowerCase() || ''
-  const isSalePendingPayment = fiscalPaymentPending
+  const isSalePendingPayment = fiscalSale && fiscalPaymentPending
   const isCreditNotePayment = !isSalePendingPayment && (paymentMethodId === 'virtual:credit-note' || selectedPaymentName.includes('nota de credito'))
   const isCardPayment = !isSalePendingPayment && !isCreditNotePayment && (selectedPaymentName.includes('tarjeta') || paymentMethodId.includes('card'))
   const selectedRemainderPaymentMethod = paymentMethods.find(
@@ -1217,49 +1170,34 @@ if (!response.ok) {
     window.print()
   }
 
-    async function findExistingCustomer(phone: string, cedula: string) {
+  async function findExistingCustomer(phone: string, cedula: string) {
     if (!storeId) return null
 
     const phoneDigits = onlyDigits(phone)
     const cedulaDigits = onlyDigits(cedula)
 
-    if (phoneDigits.length < 7 && cedulaDigits.length < 5) {
+    if (phoneDigits.length < 7 && cedulaDigits.length < 5) return null
+
+    const { data, error } = await supabase
+      .from('customers')
+      .select('id, full_name, phone, cedula')
+      .eq('store_id', storeId)
+      .limit(1000)
+
+    if (error) {
+      alert('Error buscando cliente: ' + error.message)
       return null
     }
 
-    try {
-      const response = await fetch('/api/customers?active=true&limit=1000', {
-        cache: 'no-store',
-      })
-
-      const data = await response.json().catch(() => null)
-
-      if (!response.ok) {
-        alert(
-          'Error buscando cliente: ' +
-            (data?.error || 'No se pudo consultar clientes.')
-        )
-        return null
-      }
+    return ((data || []) as ExistingCustomer[]).find((customer) => {
+      const savedPhone = onlyDigits(customer.phone || '')
+      const savedCedula = onlyDigits(customer.cedula || '')
 
       return (
-        ((Array.isArray(data) ? data : []) as ExistingCustomer[]).find(
-          (customer) => {
-            const savedPhone = onlyDigits(customer.phone || '')
-            const savedCedula = onlyDigits(customer.cedula || '')
-
-            return (
-              (Boolean(phoneDigits) && savedPhone === phoneDigits) ||
-              (Boolean(cedulaDigits) && savedCedula === cedulaDigits)
-            )
-          }
-        ) || null
+        (phoneDigits && savedPhone === phoneDigits) ||
+        (cedulaDigits && savedCedula === cedulaDigits)
       )
-    } catch (error) {
-      console.error('Error buscando cliente:', error)
-      alert('Error buscando cliente.')
-      return null
-    }
+    }) || null
   }
 
   function selectCustomer(customer: ExistingCustomer) {
@@ -1308,57 +1246,38 @@ if (!response.ok) {
       return
     }
 
-      try {
-      const quotesResponse = await fetch('/api/quotes', {
-        cache: 'no-store',
-      })
+    const { data: quoteCustomersData, error: quoteCustomersError } = await supabase
+      .from('quote_customers')
+      .select('id, company_name, rnc, phone, address')
+      .eq('store_id', storeId)
+      .limit(1000)
 
-      const quotesData = await quotesResponse.json().catch(() => null)
+    if (quoteCustomersError) {
+      return alert('Error buscando cliente fiscal: ' + quoteCustomersError.message)
+    }
 
-      if (!quotesResponse.ok) {
-        return alert(
-          'Error buscando cliente fiscal: ' +
-            (quotesData?.error || 'No se pudieron consultar las cotizaciones.')
-        )
-      }
+    const fiscalMatch = (quoteCustomersData || []).find((customer) => {
+      return onlyDigits(customer.rnc || '') === documentDigits
+    })
 
-      const fiscalMatch =
-        (Array.isArray(quotesData) ? quotesData : [])
-          .map((quote) => quote?.customer)
-          .find(
-            (customer) =>
-              customer &&
-              onlyDigits(customer.document || '') === documentDigits
-          ) || null
+    if (fiscalMatch) {
+      const fiscalDocument = formatFiscalDocument(fiscalMatch.rnc || documentValue)
+      const fiscalPhone = fiscalMatch.phone ? formatPhone(fiscalMatch.phone) : ''
 
-      if (fiscalMatch) {
-        const fiscalDocument = formatFiscalDocument(
-          fiscalMatch.document || documentValue
-        )
-        const fiscalPhone = fiscalMatch.phone
-          ? formatPhone(fiscalMatch.phone)
-          : ''
-
-        setExistingCustomerId(fiscalMatch.customer_id || null)
-        setCustomerSearch(fiscalMatch.full_name || '')
-        setCustomerName(fiscalMatch.full_name || '')
-        setCustomerPhone(fiscalPhone)
-        setCustomerCedula(fiscalDocument)
-        setFiscalCustomerName(fiscalMatch.full_name || '')
-        setFiscalCustomerRnc(fiscalDocument)
-        setFiscalCustomerPhone(fiscalPhone)
-        setFiscalCustomerAddress(fiscalMatch.address || '')
-        setFiscalCustomerMode('search')
-        setFiscalCustomerSource('cliente fiscal local')
-        setFiscalContributorConfirmed(false)
-        setCustomerLookupMessage(
-          'Cliente fiscal registrado encontrado. Confirma que es el contribuyente correcto.'
-        )
-        return
-      }
-    } catch (error) {
-      console.error('Error buscando cliente fiscal:', error)
-      return alert('Error buscando cliente fiscal.')
+      setExistingCustomerId(null)
+      setCustomerSearch(fiscalMatch.company_name || '')
+      setCustomerName(fiscalMatch.company_name || '')
+      setCustomerPhone(fiscalPhone)
+      setCustomerCedula(fiscalDocument)
+      setFiscalCustomerName(fiscalMatch.company_name || '')
+      setFiscalCustomerRnc(fiscalDocument)
+      setFiscalCustomerPhone(fiscalPhone)
+      setFiscalCustomerAddress(fiscalMatch.address || '')
+      setFiscalCustomerMode('search')
+      setFiscalCustomerSource('cliente fiscal local')
+      setFiscalContributorConfirmed(false)
+      setCustomerLookupMessage('Cliente fiscal registrado encontrado. Confirma que es el contribuyente correcto.')
+      return
     }
 
     const dgiiResult = await lookupDgiiContributor(documentValue)
@@ -1424,13 +1343,10 @@ if (!response.ok) {
     setCreditNoteRemainderMethodId(firstRegularMethod?.id || '')
   }
 
-   async function searchCreditNotePayment() {
-    if (!storeId) {
-      return alert('Este usuario no tiene una tienda asignada.')
-    }
+  async function searchCreditNotePayment() {
+    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
 
     const noteNumber = creditNoteNumber.trim()
-
     if (!noteNumber) {
       setCreditNoteMessage('Escribe el numero de nota de credito.')
       return
@@ -1439,69 +1355,68 @@ if (!response.ok) {
     setCreditNoteLoading(true)
     setCreditNoteMessage('')
 
-    try {
-      const params = new URLSearchParams({
-        number: noteNumber,
-      })
+    const { data, error } = await supabase
+      .from('credit_notes')
+      .select('id, sale_id, credit_note_number, total, original_amount, available_balance, refund_method, used_at')
+      .eq('store_id', storeId)
+      .ilike('credit_note_number', noteNumber)
+      .maybeSingle()
 
-      const response = await fetch(
-        `/api/credit-notes/lookup?${params.toString()}`,
-        {
-          cache: 'no-store',
-        }
-      )
-
-      const data = await response.json().catch(() => null)
-
-      if (response.status === 404) {
-        setCreditNoteLookup(null)
-        setCreditNoteMessage(
-          'No encontramos una nota de credito con ese numero.'
-        )
-        return
-      }
-
-      if (!response.ok) {
-        setCreditNoteLookup(null)
-        setCreditNoteMessage(
-          'No pude buscar la nota de credito: ' +
-            (data?.error || 'Error desconocido.')
-        )
-        return
-      }
-
-      const note = data as CreditNoteLookup
-
-      const available = Number(
-        note.available_balance ?? note.total ?? 0
-      )
-
-      const alreadyUsed =
-        Boolean(note.used_at) || available <= 0
-
-      if (alreadyUsed) {
-        setCreditNoteLookup(null)
-        setCreditNoteMessage(
-          'Esta nota de credito ya fue usada o no tiene balance disponible.'
-        )
-        return
-      }
-
-      setCreditNoteLookup(note)
-      setCreditNoteMessage(
-        'Nota de credito disponible para aplicar.'
-      )
-    } catch (error) {
-      console.error('Error buscando nota de credito:', error)
+    if (error) {
       setCreditNoteLookup(null)
-      setCreditNoteMessage(
-        'No pude buscar la nota de credito.'
-      )
-    } finally {
       setCreditNoteLoading(false)
+      setCreditNoteMessage('No pude buscar la nota de credito: ' + error.message)
+      return
     }
+
+    if (!data) {
+      setCreditNoteLookup(null)
+      setCreditNoteLoading(false)
+      setCreditNoteMessage('No encontramos una nota de credito con ese numero.')
+      return
+    }
+
+    const note = data as CreditNoteLookup
+
+    const { data: usedPaymentRows } = await supabase
+      .from('sale_payments')
+      .select('id')
+      .eq('store_id', storeId)
+      .eq('credit_note_id', note.id)
+      .eq('payment_method', 'credit_note')
+      .limit(1)
+
+    const available = Number(note.available_balance ?? note.total ?? 0)
+    const alreadyUsed = Boolean(note.used_at) || (usedPaymentRows || []).length > 0 || available <= 0
+
+    if (alreadyUsed) {
+      setCreditNoteLookup(null)
+      setCreditNoteLoading(false)
+      setCreditNoteMessage('Esta nota de credito ya fue usada o no tiene balance disponible.')
+      return
+    }
+
+    let customerData: Pick<CreditNoteLookup, 'customer_id' | 'customer_name' | 'customer_rnc'> = {}
+
+    if (note.sale_id) {
+      const { data: saleData } = await supabase
+        .from('sales')
+        .select('customer_id, fiscal_customer_name, fiscal_customer_rnc')
+        .eq('store_id', storeId)
+        .eq('id', note.sale_id)
+        .maybeSingle()
+
+      customerData = {
+        customer_id: saleData?.customer_id || null,
+        customer_name: saleData?.fiscal_customer_name || null,
+        customer_rnc: saleData?.fiscal_customer_rnc || null,
+      }
+    }
+
+    setCreditNoteLookup({ ...note, ...customerData })
+    setCreditNoteLoading(false)
+    setCreditNoteMessage('Nota de credito disponible para aplicar.')
   }
-  
   function newSale() {
     setLastInvoice(null)
     setCart([])
@@ -1524,112 +1439,53 @@ if (!response.ok) {
     searchRef.current?.focus()
   }
 
-   async function verifyCartStockBeforeSale() {
+  async function verifyCartStockBeforeSale() {
     if (!storeId) return null
 
-    const productIds = Array.from(
-      new Set(cart.map((item) => item.id))
-    )
-
+    const productIds = Array.from(new Set(cart.map((item) => item.id)))
     if (productIds.length === 0) return null
 
-    try {
-      const response = await fetch('/api/products?limit=1000', {
-        cache: 'no-store',
-      })
+    const { data, error } = await supabase
+      .from('products')
+      .select('id, name, stock')
+      .eq('store_id', storeId)
+      .in('id', productIds)
 
-      const data = await response.json().catch(() => null)
-
-      if (!response.ok) {
-        alert(
-          'No pude verificar el stock antes de facturar: ' +
-            (data?.error || 'Error desconocido.')
-        )
-        return null
-      }
-
-      const rows = Array.isArray(data) ? data : []
-
-      const stockMap = new Map<string, number>(
-        rows
-          .filter((product) => productIds.includes(product.id))
-          .map((product) => [
-            product.id,
-            Number(product.stock || 0),
-          ])
-      )
-
-      const requestedByProduct = new Map<
-        string,
-        { name: string; quantity: number }
-      >()
-
-      cart.forEach((item) => {
-        const current = requestedByProduct.get(item.id)
-
-        requestedByProduct.set(item.id, {
-          name: item.name,
-          quantity:
-            (current?.quantity || 0) +
-            Number(item.quantity || 0),
-        })
-      })
-
-      const insufficient = Array.from(
-        requestedByProduct.entries()
-      ).find(([productId, item]) => {
-        return (
-          Number(stockMap.get(productId) || 0) <
-          item.quantity
-        )
-      })
-
-      if (insufficient) {
-        const [productId, item] = insufficient
-        const available = Number(
-          stockMap.get(productId) || 0
-        )
-
-        alert(
-          `Stock insuficiente para ${item.name}. Disponible: ${available}. Solicitado: ${item.quantity}.`
-        )
-
-        await loadPosProducts(
-          storeId,
-          posFeaturedProductsLimit,
-          { showLoading: false },
-          {
-            searchTerm: debouncedSearch,
-            category: categoryFilter,
-          }
-        )
-
-        return null
-      }
-
-      setProducts((currentProducts) =>
-        currentProducts.map((product) =>
-          stockMap.has(product.id)
-            ? {
-                ...product,
-                stock: Number(
-                  stockMap.get(product.id) || 0
-                ),
-              }
-            : product
-        )
-      )
-
-      return stockMap
-    } catch (error) {
-      console.error(
-        'Error verificando stock antes de facturar:',
-        error
-      )
-
-      alert('No pude verificar el stock antes de facturar.')
+    if (error) {
+      alert('No pude verificar el stock antes de facturar: ' + error.message)
       return null
     }
+
+    const stockMap = new Map((data || []).map((product) => [product.id, Number(product.stock || 0)]))
+    const requestedByProduct = new Map<string, { name: string; quantity: number }>()
+
+    cart.forEach((item) => {
+      const current = requestedByProduct.get(item.id)
+      requestedByProduct.set(item.id, {
+        name: item.name,
+        quantity: (current?.quantity || 0) + Number(item.quantity || 0),
+      })
+    })
+
+    const insufficient = Array.from(requestedByProduct.entries()).find(([productId, item]) => {
+      return Number(stockMap.get(productId) || 0) < item.quantity
+    })
+
+    if (insufficient) {
+      const [productId, item] = insufficient
+      const available = Number(stockMap.get(productId) || 0)
+      alert(`Stock insuficiente para ${item.name}. Disponible: ${available}. Solicitado: ${item.quantity}.`)
+      await loadPosProducts(storeId, posFeaturedProductsLimit, { showLoading: false }, { searchTerm: debouncedSearch, category: categoryFilter })
+      return null
+    }
+
+    setProducts((currentProducts) =>
+      currentProducts.map((product) =>
+        stockMap.has(product.id) ? { ...product, stock: Number(stockMap.get(product.id) || 0) } : product
+      )
+    )
+
+    return stockMap
   }
 
   function handleInvoiceClick() {
@@ -1670,10 +1526,6 @@ if (!response.ok) {
       return alert('Para celulares, tablets y laptops debes agregar nombre y teléfono')
     }
 
-    if (isSalePendingPayment && (!customerName.trim() || !customerPhone.trim())) {
-      return alert('Para dejar una venta pendiente debes agregar nombre y teléfono del cliente')
-    }
-
     if (fiscalSale && !customerName.trim()) {
       return alert('Selecciona un cliente para emitir una venta con comprobante.')
     }
@@ -1708,227 +1560,234 @@ if (!response.ok) {
     if (!verifiedStockMap) return
 
     setSaving(true)
-        let customerId: string | null = null
 
-    if (requiresCustomer || fiscalSale || isSalePendingPayment) {
-      const existingCustomer = existingCustomerId
-        ? { id: existingCustomerId }
-        : await findExistingCustomer(customerPhone, customerCedula)
+    let customerId: string | null = null
 
-      if (existingCustomer) {
-        customerId = existingCustomer.id
-      } else {
-        const customerResponse = await fetch('/api/customers', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            fullName: customerName.trim(),
-            phone: customerPhone.trim() || null,
-            document:
-              customerCedula.trim() ||
-              fiscalCustomerRnc.trim() ||
-              null,
-            documentType: fiscalCustomerRnc.trim()
-              ? 'rnc'
-              : 'cedula',
-          }),
-        })
+    if (requiresCustomer || fiscalSale) {
+      {
+        const existingCustomer = existingCustomerId ? { id: existingCustomerId } : await findExistingCustomer(customerPhone, customerCedula)
 
-        const customerResult = await customerResponse
-          .json()
-          .catch(() => null)
+        if (existingCustomer) {
+          customerId = existingCustomer.id
+        } else {
+          const { data: customer, error } = await supabase
+            .from('customers')
+            .insert({
+              store_id: storeId,
+              full_name: customerName.trim(),
+              phone: customerPhone.trim(),
+              cedula: customerCedula.trim() || null,
+            })
+            .select('id')
+            .single()
 
-        if (!customerResponse.ok) {
-          setSaving(false)
-          return alert(
-            customerResult?.error ||
-              'No se pudo registrar el cliente.'
-          )
+          if (error) {
+            setSaving(false)
+            return alert(error.message)
+          }
+
+          customerId = customer.id
         }
-
-        customerId = customerResult.id
       }
     }
 
-    const paymentMethodForSale = isCreditNotePayment
-      ? creditNoteRemainderMethodId
-      : paymentMethodId
-
-    const receivedForSale =
-      isCreditNotePayment && isRemainderCashPayment
-        ? Number(creditNoteRemainderCashReceived || 0)
-        : isCashPayment
-          ? Number(cashReceived || 0)
-          : 0
-
-    const changeForSale =
-      isCreditNotePayment && isRemainderCashPayment
+    const paymentMethodForSale = isCreditNotePayment ? creditNoteRemainderMethodId : paymentMethodId
+    const receivedForSale = isCreditNotePayment && isRemainderCashPayment
+      ? Number(creditNoteRemainderCashReceived || 0)
+      : isCashPayment
+        ? Number(cashReceived || 0)
+        : 0
+    const changeForSale = isCreditNotePayment && isRemainderCashPayment
+      ? Math.max(0, changeAmount)
+      : isCashPayment
         ? Math.max(0, changeAmount)
-        : isCashPayment
-          ? Math.max(0, changeAmount)
-          : 0
-
-    const saleNotes = isSalePendingPayment
-      ? 'Venta pendiente de pago'
-      : isCreditNotePayment
-      ? `Venta POS con nota de credito ${
-          creditNoteLookup?.credit_note_number ||
-          creditNoteNumber.trim()
-        }`
+        : 0
+    const saleNotes = isCreditNotePayment
+      ? `Venta POS con nota de credito ${creditNoteLookup?.credit_note_number || creditNoteNumber.trim()}`
       : fiscalSale
         ? 'Venta POS con comprobante fiscal'
         : requiresCustomer
           ? 'Venta con datos del cliente'
           : 'Factura rapida'
+    const { data: sale, error: saleError } = await supabase
+      .from('sales')
+      .insert({
+        store_id: storeId,
+        cash_register_id: isSalePendingPayment ? null : openCash.id,
+        customer_id: customerId,
+        sale_channel: 'pos',
+        subtotal,
+        discount: cart.reduce((sum, item) => sum + Number(item.discount || 0), 0),
+        itbis: taxAmount,
+        total,
+        shipping_cost: shipping,
+        payment_method_id: isSalePendingPayment ? null : paymentMethodForSale.startsWith('virtual:') ? null : paymentMethodForSale || null,
+        card_fee: isSalePendingPayment ? 0 : cardFee,
+        net_received: netReceived,
+        cash_received: isSalePendingPayment ? 0 : receivedForSale,
+        cash_change: isSalePendingPayment ? 0 : changeForSale,
+        amount_paid: isSalePendingPayment ? 0 : total,
+        balance_due: isSalePendingPayment ? total : 0,
+        status: isSalePendingPayment ? 'pending' : 'paid',
+        ncf: fiscalSale ? availableNcf?.ncf : null,
+        fiscal_receipt_type: fiscalSale ? fiscalReceiptType : null,
+        fiscal_status: fiscalSale ? 'ready_to_send' : 'not_applicable',
+        fiscal_customer_name: fiscalSale ? fiscalCustomerName.trim() : null,
+        fiscal_customer_rnc: fiscalSale ? fiscalCustomerRnc.trim() : null,
+        fiscal_customer_phone: fiscalSale ? fiscalCustomerPhone.trim() || null : null,
+        fiscal_customer_address: fiscalSale ? fiscalCustomerAddress.trim() || null : null,
+        fiscal_customer_source: fiscalSale ? fiscalCustomerSource : null,
+        fiscal_notes: fiscalSale ? fiscalNotes.trim() || null : null,
+        notes: saleNotes,
+      })
+      .select('id, invoice_number, created_at')
+      .single()
 
-           const payments: Array<{
-      paymentMethodId?: string | null
-      paymentMethod: 'cash' | 'transfer' | 'card' | 'credit_note'
-      amount: number
-      creditNoteId?: string | null
-      cardFee?: number
-    }> = []
-
-    const getPaymentType = (
-      methodId: string,
-      methodName: string
-    ): 'cash' | 'transfer' | 'card' => {
-      const id = methodId.toLowerCase()
-      const name = methodName.toLowerCase()
-
-      if (name.includes('tarjeta') || id.includes('card')) {
-        return 'card'
-      }
-
-      if (
-        name.includes('transfer') ||
-        id.includes('transfer')
-      ) {
-        return 'transfer'
-      }
-
-      return 'cash'
+    if (saleError) {
+      setSaving(false)
+      return alert(saleError.message)
     }
 
-    if (isCreditNotePayment) {
-      if (creditNoteLookup && creditNoteAppliedAmount > 0) {
-        payments.push({
-          paymentMethod: 'credit_note',
-          amount: creditNoteAppliedAmount,
-          creditNoteId: creditNoteLookup.id,
-        })
-      }
+    const salePaymentRows = [] as Array<{
+      store_id: string
+      sale_id: string
+      payment_method: 'cash' | 'transfer' | 'card' | 'credit_note'
+      amount: number
+      reference: string | null
+      credit_note_id: string | null
+      card_fee: number
+    }>
+
+    if (isCreditNotePayment && creditNoteLookup && creditNoteAppliedAmount > 0) {
+      salePaymentRows.push({
+        store_id: storeId,
+        sale_id: sale.id,
+        payment_method: 'credit_note',
+        amount: creditNoteAppliedAmount,
+        reference: creditNoteLookup.credit_note_number || creditNoteNumber.trim(),
+        credit_note_id: creditNoteLookup.id,
+        card_fee: 0,
+      })
 
       if (creditNoteRemainingTotal > 0) {
-        const remainderMethod = paymentMethods.find(
-          (method) => method.id === creditNoteRemainderMethodId
-        )
-
-        payments.push({
-          paymentMethodId: creditNoteRemainderMethodId || null,
-          paymentMethod: getPaymentType(
-            creditNoteRemainderMethodId,
-            remainderMethod?.name || ''
-          ),
+        const remainderKind = getPaymentMethodKind(creditNoteRemainderMethodId)
+        salePaymentRows.push({
+          store_id: storeId,
+          sale_id: sale.id,
+          payment_method: remainderKind,
           amount: creditNoteRemainingTotal,
-          cardFee: isRemainderCardPayment ? cardFee : 0,
+          reference: null,
+          credit_note_id: null,
+          card_fee: remainderKind === 'card' ? cardFee : 0,
         })
       }
-    } else if (!isSalePendingPayment) {
-      payments.push({
-        paymentMethodId: paymentMethodId || null,
-        paymentMethod: getPaymentType(
-          paymentMethodId,
-          selectedPaymentMethod?.name || ''
-        ),
-        amount: total,
-        cardFee,
+    } else {
+      const regularKind = getPaymentMethodKind(paymentMethodId)
+      salePaymentRows.push({
+        store_id: storeId,
+        sale_id: sale.id,
+        payment_method: regularKind,
+        amount: Math.max(0, total - (regularKind === 'card' ? cardFee : 0)),
+        reference: null,
+        credit_note_id: null,
+        card_fee: regularKind === 'card' ? cardFee : 0,
       })
     }
 
-    const saleResponse = await fetch('/api/pos/sales', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        cashRegisterId: openCash.id,
-        customerId,
-        subtotal,
-        discount: discountAmount,
-        tax: taxAmount,
-        total,
-        shippingCost: shipping,
-        cardFee: isSalePendingPayment ? 0 : cardFee,
-        netReceived: isSalePendingPayment
-          ? 0
-          : Math.max(0, total - changeForSale),
-        cashReceived: receivedForSale,
-        cashChange: changeForSale,
-        pendingPayment: isSalePendingPayment,
-        paymentMethodId: paymentMethodForSale || null,
+    if (!isSalePendingPayment && salePaymentRows.length > 0) {
+      const { error: paymentsError } = await supabase
+        .from('sale_payments')
+        .insert(salePaymentRows)
 
-        fiscalReceiptType: fiscalSale
-          ? fiscalReceiptType
-          : null,
-        fiscalCustomerName: fiscalSale
-          ? fiscalCustomerName.trim() || customerName.trim()
-          : null,
-        fiscalCustomerRnc: fiscalSale
-          ? fiscalCustomerRnc.trim() || customerCedula.trim()
-          : null,
-        fiscalCustomerPhone: fiscalSale
-          ? customerPhone.trim() || null
-          : null,
-        fiscalCustomerAddress: fiscalSale
-          ? fiscalCustomerAddress.trim() || null
-          : null,
-        fiscalCustomerSource: fiscalSale
-          ? fiscalCustomerSource || null
-          : null,
-        fiscalNotes: fiscalSale
-          ? fiscalNotes.trim() || null
-          : null,
+      if (paymentsError) {
+        setSaving(false)
+        return alert('Factura creada, pero no pude registrar el desglose de pago: ' + paymentsError.message)
+      }
+    }
 
-        notes: saleNotes,
+    if (isCreditNotePayment && creditNoteLookup && creditNoteAppliedAmount > 0) {
+      const newBalance = Math.max(0, creditNoteAvailable - creditNoteAppliedAmount)
+      const { error: creditUpdateError } = await supabase
+        .from('credit_notes')
+        .update({
+          available_balance: newBalance,
+          used_at: newBalance <= 0 ? new Date().toISOString() : null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('store_id', storeId)
+        .eq('id', creditNoteLookup.id)
 
-        items: cart.map((item) => ({
-          productId: item.id,
-          productName: item.name,
-          sku: item.sku,
-          quantity: item.quantity,
-          cost: item.cost,
-          unitPrice: item.sale_price,
-          discount: 0,
-          tax: 0,
-          total: item.sale_price * item.quantity,
-          imei: item.imei.trim() || null,
-        })),
+      if (creditUpdateError) {
+        setSaving(false)
+        return alert('Factura creada, pero no pude actualizar el balance de la nota de credito: ' + creditUpdateError.message)
+      }
+    }
 
-        payments,
-      }),
+    const saleItems = cart.map((item) => {
+      const unitPrice = getCartItemUnitPrice(item)
+      const itemTotal = unitPrice * item.quantity
+      const discount = Number(item.discount || 0)
+
+      return {
+        sale_id: sale.id,
+        store_id: storeId,
+        product_id: item.id,
+        product_name: item.name,
+        quantity: item.quantity,
+        unit_price: unitPrice,
+        cost: item.cost,
+        discount,
+        total: Math.max(0, itemTotal - discount),
+        imei: item.imei || null,
+      }
     })
 
-    const saleResult = await saleResponse
-      .json()
-      .catch(() => null)
+    const { error: itemsError } = await supabase
+      .from('sale_items')
+      .insert(saleItems)
 
-    if (!saleResponse.ok) {
+    if (itemsError) {
       setSaving(false)
-      return alert(
-        saleResult?.error ||
-          'No se pudo completar la venta.'
-      )
-    }
-        const sale = {
-      id: saleResult.saleId,
-      invoice_number: saleResult.invoiceNumber,
-      created_at: saleResult.createdAt,
-      ncf: saleResult.ncf ?? null,
+      return alert(itemsError.message)
     }
 
+    for (const item of cart) {
+      const verifiedStock = Number(verifiedStockMap.get(item.id) || 0)
+      const { data: updatedProduct, error: stockUpdateError } = await supabase
+        .from('products')
+        .update({ stock: Math.max(0, verifiedStock - item.quantity) })
+        .eq('store_id', storeId)
+        .eq('id', item.id)
+        .eq('stock', verifiedStock)
+        .gte('stock', item.quantity)
+        .select('id')
+        .maybeSingle()
+
+      if (stockUpdateError || !updatedProduct) {
+        setSaving(false)
+        await loadPosProducts(storeId, posFeaturedProductsLimit, { showLoading: false }, { searchTerm: debouncedSearch, category: categoryFilter })
+        return alert(`No pude descontar el stock de ${item.name}. Otra caja pudo haber vendido este producto. Revisa la factura y el inventario antes de continuar.`)
+      }
+    }
+
+    if (fiscalSale && availableNcf) {
+      const { error: ncfError } = await supabase
+        .from('ncf_receipts')
+        .update({
+          status: 'used',
+          used_sale_id: sale.id,
+          used_company_name: fiscalCustomerName.trim(),
+          used_customer_rnc: fiscalCustomerRnc.trim(),
+          used_at: new Date().toISOString(),
+        })
+        .eq('store_id', storeId)
+        .eq('id', availableNcf.id)
+
+      if (ncfError) {
+        setSaving(false)
+        return alert('Factura creada, pero no pude marcar el NCF como usado: ' + ncfError.message)
+      }
+    }
     await logAudit({
       storeId,
       module: 'pos',
@@ -1936,7 +1795,7 @@ if (!response.ok) {
       entityType: 'sale',
       entityId: sale.id,
       summary: `${isSalePendingPayment ? 'Factura pendiente' : 'Venta POS'} ${sale.invoice_number || sale.id} por ${total}.`,
-      afterData: { invoiceNumber: sale.invoice_number, total, subtotal, taxAmount, cardFee: isSalePendingPayment ? 0 : cardFee, shipping, pendingPayment: isSalePendingPayment, ncf: fiscalSale ? sale.ncf : null },
+      afterData: { invoiceNumber: sale.invoice_number, total, subtotal, taxAmount, cardFee: isSalePendingPayment ? 0 : cardFee, shipping, pendingPayment: isSalePendingPayment, ncf: fiscalSale ? availableNcf?.ncf : null },
     })
 
     setLastInvoice({
@@ -1966,7 +1825,8 @@ if (!response.ok) {
       <AppShell defaultSidebarOpen={false} showSidebarToggle>
         <div className="mx-auto max-w-xl rounded-2xl border border-zinc-200 bg-white p-8 shadow-sm">
           <div className="flex justify-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-castelnova-50 text-castelnova-700">`n              <Wallet size={32} />
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600">
+              <Wallet size={32} />
             </div>
           </div>
 
@@ -1984,13 +1844,13 @@ if (!response.ok) {
               value={openingAmount}
               onChange={(e) => setOpeningAmount(e.target.value)}
               placeholder="Ej: 5000"
-              className="w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-castelnova-400"
+              className="w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-emerald-500"
             />
           </div>
 
           <button
             onClick={openRegister}
-            className="mt-5 w-full rounded-xl bg-castelnova-500 py-4 font-bold text-white hover:bg-castelnova-700"
+            className="mt-5 w-full rounded-xl bg-emerald-500 py-4 font-bold text-white hover:bg-emerald-600"
           >
             Abrir caja
           </button>
@@ -2084,7 +1944,7 @@ if (!response.ok) {
         <section className="lg:col-span-2">
                     <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_260px]">
             <div className="flex items-center gap-3 rounded-2xl border border-zinc-200 bg-white px-4 py-3 shadow-sm">
-              <Search className="text-castelnova-500" size={20} />
+              <Search className="text-emerald-500" size={20} />
               <input
                 ref={searchRef}
                 value={search}
@@ -2121,7 +1981,7 @@ if (!response.ok) {
                 key={product.id}
                 onClick={() => addToCart(product)}
                 disabled={product.stock <= 0}
-                className="overflow-hidden rounded-2xl border border-zinc-200 bg-white text-left shadow-sm hover:border-castelnova-400 disabled:cursor-not-allowed disabled:opacity-50"
+                className="overflow-hidden rounded-2xl border border-zinc-200 bg-white text-left shadow-sm hover:border-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <div className="flex h-40 items-center justify-center bg-zinc-100">
                   {getProductMainImage(product) ? (
@@ -2163,7 +2023,7 @@ if (!response.ok) {
 
         <aside className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
           <div className="mb-4 flex items-center gap-2">
-            <ShoppingCart className="text-castelnova-500" />
+            <ShoppingCart className="text-emerald-500" />
             <h2 className="text-xl font-bold">Carrito</h2>
           </div>
 
@@ -2273,7 +2133,7 @@ if (!response.ok) {
                     value={item.discount || ''}
                     onChange={(e) => updateDiscount(item.cartId, e.target.value)}
                     placeholder="Descuento RD$"
-                    className="mt-3 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-castelnova-400"
+                    className="mt-3 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-emerald-500"
                   />
 
                   <p className="mt-2 text-sm text-zinc-500">
@@ -2307,7 +2167,7 @@ if (!response.ok) {
     className={`w-full rounded-xl border bg-white px-3 py-2 text-sm outline-none ${
       item.imei.length === 15
         ? 'border-emerald-500'
-        : 'border-zinc-300 focus:border-castelnova-400'
+        : 'border-zinc-300 focus:border-emerald-500'
     }`}
   />
 
@@ -2329,14 +2189,14 @@ if (!response.ok) {
             })}
           </div>
 
-          {(requiresCustomer || isSalePendingPayment) && !fiscalSale && (
+          {requiresCustomer && !fiscalSale && (
             <div className="mt-5 space-y-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
               <h3 className="font-semibold text-emerald-700">Datos del cliente</h3>
               <input
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
                 placeholder="Nombre del cliente *"
-                className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-castelnova-400"
+                className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
               />
 
               <input
@@ -2349,7 +2209,7 @@ if (!response.ok) {
                 }}
                 onBlur={() => void autocompleteCustomer()}
                 placeholder="Teléfono *"
-                className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-castelnova-400"
+                className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
               />
 
               <input
@@ -2362,14 +2222,13 @@ if (!response.ok) {
                 }}
                 onBlur={() => void autocompleteCustomer()}
                 placeholder="Cedula opcional"
-                className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-castelnova-400"
+                className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
               />
               {customerLookupMessage && (
                 <p className="text-sm font-semibold text-emerald-700">{customerLookupMessage}</p>
               )}
             </div>
           )}
-          {fiscalSalesEnabled ? (
           <div className="mt-5 rounded-xl border border-zinc-200 bg-zinc-50 p-4">
             <label className="flex items-center gap-3 font-bold text-zinc-800">
               <input
@@ -2385,10 +2244,11 @@ if (!response.ok) {
                   }
                   if (!checked) {
                     setTaxPercent('0')
+                    setFiscalPaymentPending(false)
                     setAvailableNcf(null)
                   }
                 }}
-                className="h-5 w-5 accent-castelnova-500"
+                className="h-5 w-5 accent-emerald-600"
               />
               Venta con comprobante
             </label>
@@ -2407,7 +2267,7 @@ if (!response.ok) {
                       setAvailableNcf(null)
                       loadNextAvailableNcf(nextType)
                     }}
-                    className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-3 outline-none focus:border-castelnova-400"
+                    className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-3 outline-none focus:border-emerald-500"
                   >
                     {FISCAL_RECEIPT_TYPES.map((type) => (
                       <option key={type.value} value={type.value}>
@@ -2426,7 +2286,7 @@ if (!response.ok) {
                         setFiscalContributorConfirmed(false)
                         setCustomerLookupMessage('')
                       }}
-                      className={`rounded-xl px-3 py-2 text-sm font-bold transition ${fiscalCustomerMode === 'search' ? 'bg-castelnova-500 text-white' : 'border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50'}`}
+                      className={`rounded-xl px-3 py-2 text-sm font-bold transition ${fiscalCustomerMode === 'search' ? 'bg-emerald-600 text-white' : 'border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50'}`}
                     >
                       Buscar registrado
                     </button>
@@ -2438,7 +2298,7 @@ if (!response.ok) {
                         setFiscalContributorConfirmed(false)
                         setCustomerLookupMessage('')
                       }}
-                      className={`rounded-xl px-3 py-2 text-sm font-bold transition ${fiscalCustomerMode === 'new' ? 'bg-castelnova-500 text-white' : 'border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50'}`}
+                      className={`rounded-xl px-3 py-2 text-sm font-bold transition ${fiscalCustomerMode === 'new' ? 'bg-emerald-600 text-white' : 'border border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50'}`}
                     >
                       Agregar nuevo
                     </button>
@@ -2454,7 +2314,7 @@ if (!response.ok) {
                           value={fiscalLookupValue}
                           onChange={(event) => setFiscalLookupValue(event.target.value)}
                           placeholder="Buscar por RNC o cedula"
-                          className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 py-3 outline-none focus:border-castelnova-400"
+                          className="min-w-0 flex-1 rounded-xl border border-zinc-300 bg-white px-3 py-3 outline-none focus:border-emerald-500"
                         />
                         <button
                           type="button"
@@ -2506,7 +2366,7 @@ if (!response.ok) {
                           setFiscalContributorConfirmed(false)
                         }}
                         placeholder="Nombre o razon social *"
-                        className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-castelnova-400"
+                        className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
                       />
                       <input
                         value={fiscalCustomerPhone}
@@ -2518,7 +2378,7 @@ if (!response.ok) {
                         }}
                         onBlur={() => void autocompleteCustomer(customerPhone, customerCedula)}
                         placeholder="Telefono *"
-                        className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-castelnova-400"
+                        className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
                       />
                       <input
                         value={fiscalCustomerRnc}
@@ -2530,13 +2390,13 @@ if (!response.ok) {
                         }}
                         onBlur={() => void autocompleteCustomer(customerPhone, customerCedula)}
                         placeholder="RNC o cedula *"
-                        className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-castelnova-400"
+                        className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
                       />
                       <input
                         value={fiscalCustomerAddress}
                         onChange={(event) => { setFiscalCustomerAddress(event.target.value); setFiscalContributorConfirmed(false) }}
                         placeholder="Direccion"
-                        className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-castelnova-400"
+                        className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
                       />
                     </div>
                   )}
@@ -2554,7 +2414,7 @@ if (!response.ok) {
 
                   <label className="block">
                     <span className="mb-2 block text-sm text-zinc-500">Notas para la factura (opcional)</span>
-                    <textarea value={fiscalNotes} onChange={(event) => setFiscalNotes(event.target.value)} placeholder="Observaciones que aparecerán impresas" className="min-h-20 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-castelnova-400" />
+                    <textarea value={fiscalNotes} onChange={(event) => setFiscalNotes(event.target.value)} placeholder="Observaciones que aparecerán impresas" className="min-h-20 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500" />
                   </label>
 
                   {customerLookupMessage && (
@@ -2575,29 +2435,27 @@ if (!response.ok) {
                   </button>
                 </div>
 
+                <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 font-bold text-amber-900">
+                  <input
+                    type="checkbox"
+                    checked={fiscalPaymentPending}
+                    onChange={(event) => {
+                      setFiscalPaymentPending(event.target.checked)
+                      if (event.target.checked) resetCreditNotePayment()
+                    }}
+                    className="mt-1 h-5 w-5 accent-amber-600"
+                  />
+                  <span>
+                    Facturar como pendiente de pago
+                    <span className="block text-sm font-semibold text-amber-800">
+                      Para clientes con credito. La factura queda en cuentas por cobrar y no entra al cierre como dinero recibido.
+                    </span>
+                  </span>
+                </label>
 
               </div>
             )}
           </div>
-          ) : null}
-
-          <label className="mt-5 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 font-bold text-amber-900">
-            <input
-              type="checkbox"
-              checked={fiscalPaymentPending}
-              onChange={(event) => {
-                setFiscalPaymentPending(event.target.checked)
-                if (event.target.checked) resetCreditNotePayment()
-              }}
-              className="mt-1 h-5 w-5 accent-amber-600"
-            />
-            <span>
-              Pago pendiente
-              <span className="block text-sm font-semibold text-amber-800">
-                Registra el saldo en cuentas por cobrar y no lo incorpora al cierre como dinero recibido.
-              </span>
-            </span>
-          </label>
 
           <div className="mt-5">
             <label className="mb-2 block text-sm text-zinc-500">
@@ -2615,7 +2473,7 @@ if (!response.ok) {
                   resetCreditNotePayment()
                 }
               }}
-              className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-3 outline-none focus:border-castelnova-400"
+              className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-3 outline-none focus:border-emerald-500"
             >
               {paymentMethods.map((method) => (
                 <option key={method.id} value={method.id}>
@@ -2643,7 +2501,7 @@ if (!response.ok) {
                     setCreditNoteMessage('')
                   }}
                   placeholder="Ej: NC-000001"
-                  className="w-full rounded-xl border border-emerald-200 bg-white px-3 py-3 font-bold outline-none focus:border-castelnova-400"
+                  className="w-full rounded-xl border border-emerald-200 bg-white px-3 py-3 font-bold outline-none focus:border-emerald-500"
                 />
                 <button
                   type="button"
@@ -2686,7 +2544,7 @@ if (!response.ok) {
                       setCreditNoteRemainderMethodId(event.target.value)
                       setCreditNoteRemainderCashReceived('')
                     }}
-                    className="w-full rounded-xl border border-emerald-200 bg-white px-3 py-3 font-bold outline-none focus:border-castelnova-400"
+                    className="w-full rounded-xl border border-emerald-200 bg-white px-3 py-3 font-bold outline-none focus:border-emerald-500"
                   >
                     {paymentMethods
                       .filter((method) => method.id !== 'virtual:credit-note')
@@ -2704,7 +2562,7 @@ if (!response.ok) {
                       value={creditNoteRemainderCashReceived}
                       onChange={(event) => setCreditNoteRemainderCashReceived(event.target.value)}
                       placeholder="Efectivo recibido para el faltante"
-                      className="w-full rounded-xl border border-emerald-200 bg-white px-3 py-3 font-bold outline-none focus:border-castelnova-400"
+                      className="w-full rounded-xl border border-emerald-200 bg-white px-3 py-3 font-bold outline-none focus:border-emerald-500"
                     />
                   )}
                 </div>
@@ -2724,7 +2582,7 @@ if (!response.ok) {
               value={shippingCost}
               onChange={(e) => setShippingCost(e.target.value)}
               placeholder="Costo del envío"
-              className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-3 outline-none focus:border-castelnova-400"
+              className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-3 outline-none focus:border-emerald-500"
             />
           </div>
 
@@ -2740,7 +2598,7 @@ if (!response.ok) {
                   step="0.01"
                   value={taxPercent}
                   onChange={(event) => updateTaxPercent(event.target.value)}
-                  className="w-full rounded-xl border border-emerald-200 bg-white px-3 py-2 text-lg font-black outline-none focus:border-castelnova-400"
+                  className="w-full rounded-xl border border-emerald-200 bg-white px-3 py-2 text-lg font-black outline-none focus:border-emerald-500"
                 />
                 <div className="mt-3 space-y-2">
                   <BigRow label="ITBIS calculado" value={taxAmount} />
@@ -2760,7 +2618,7 @@ if (!response.ok) {
           <button
             onClick={handleInvoiceClick}
             disabled={saving}
-            className="mt-5 w-full rounded-xl bg-castelnova-500 py-4 font-bold text-white hover:bg-castelnova-700 disabled:opacity-50"
+            className="mt-5 w-full rounded-xl bg-emerald-500 py-4 font-bold text-white hover:bg-emerald-600 disabled:opacity-50"
           >
             {saving ? 'Facturando...' : 'Facturar'}
           </button>
@@ -2802,7 +2660,7 @@ if (!response.ok) {
 
               <button
                 onClick={newSale}
-                className="rounded-xl bg-castelnova-500 py-3 font-bold text-white hover:bg-castelnova-700"
+                className="rounded-xl bg-emerald-500 py-3 font-bold text-white hover:bg-emerald-600"
               >
                 Nueva venta
               </button>
@@ -2888,7 +2746,7 @@ if (!response.ok) {
           type="number"
           value={cashReceived}
           onChange={(e) => setCashReceived(e.target.value)}
-          className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 text-2xl font-bold outline-none focus:border-castelnova-400"
+          className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 text-2xl font-bold outline-none focus:border-emerald-500"
           placeholder="Ej: 1000"
           autoFocus
         />
@@ -2923,7 +2781,7 @@ if (!response.ok) {
             setCashModal(false)
             completeSale()
           }}
-          className="rounded-xl bg-castelnova-500 py-3 font-bold text-white hover:bg-castelnova-700"
+          className="rounded-xl bg-emerald-500 py-3 font-bold text-white hover:bg-emerald-600"
         >
           Facturar
         </button>
@@ -2993,7 +2851,7 @@ function WithdrawalModal({
                   value={amount}
                   onChange={(event) => onAmountChange(event.target.value)}
                   placeholder="RD$0.00"
-                  className="w-full rounded-2xl border border-zinc-300 px-4 py-3 text-xl font-black outline-none focus:border-castelnova-400"
+                  className="w-full rounded-2xl border border-zinc-300 px-4 py-3 text-xl font-black outline-none focus:border-emerald-500"
                   autoFocus
                 />
               </label>
@@ -3004,7 +2862,7 @@ function WithdrawalModal({
                   value={reason}
                   onChange={(event) => onReasonChange(event.target.value)}
                   placeholder="Ej: Compra de material, pago de envio, gasto operativo"
-                  className="w-full rounded-2xl border border-zinc-300 px-4 py-3 outline-none focus:border-castelnova-400"
+                  className="w-full rounded-2xl border border-zinc-300 px-4 py-3 outline-none focus:border-emerald-500"
                 />
               </label>
 
@@ -3015,7 +2873,7 @@ function WithdrawalModal({
                   onChange={(event) => onNotesChange(event.target.value)}
                   placeholder="Opcional"
                   rows={3}
-                  className="w-full rounded-2xl border border-zinc-300 px-4 py-3 outline-none focus:border-castelnova-400"
+                  className="w-full rounded-2xl border border-zinc-300 px-4 py-3 outline-none focus:border-emerald-500"
                 />
               </label>
             </div>
@@ -3045,7 +2903,7 @@ function WithdrawalModal({
                 type="button"
                 onClick={onSave}
                 disabled={!isValid || saving}
-                className="rounded-xl bg-castelnova-500 py-3 font-black text-white hover:bg-castelnova-700 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-xl bg-emerald-600 py-3 font-black text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {saving ? 'Guardando...' : 'Guardar retiro'}
               </button>
@@ -3179,7 +3037,7 @@ function CloseRegisterModal({
             value={amount}
             onChange={(e) => onAmountChange(e.target.value)}
             placeholder="RD$0.00"
-            className="w-full rounded-2xl border border-zinc-300 px-4 py-4 text-2xl font-black outline-none focus:border-castelnova-400"
+            className="w-full rounded-2xl border border-zinc-300 px-4 py-4 text-2xl font-black outline-none focus:border-emerald-500"
             autoFocus
           />
         </label>
@@ -3216,7 +3074,7 @@ function CloseRegisterModal({
             type="button"
             onClick={onPrintAndClose}
             disabled={!isValidAmount || processing}
-            className="rounded-xl bg-castelnova-500 py-3 font-black text-white hover:bg-castelnova-700 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-xl bg-emerald-600 py-3 font-black text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {processing ? 'Cerrando caja...' : 'Imprimir cuadre y cerrar'}
           </button>
@@ -3271,7 +3129,7 @@ function CloseSummaryModal({
 
           <button
             onClick={onClose}
-            className="rounded-xl bg-castelnova-500 py-3 font-bold text-white hover:bg-castelnova-700"
+            className="rounded-xl bg-emerald-500 py-3 font-bold text-white hover:bg-emerald-600"
           >
             Aceptar
           </button>
@@ -3280,5 +3138,46 @@ function CloseSummaryModal({
     </div>
   )
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

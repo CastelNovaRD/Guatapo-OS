@@ -84,7 +84,8 @@ export function paymentMethodLabel(sale: Invoice80Sale, paymentMethod: Invoice80
 export function receiptQrValue(sale: Invoice80Sale, items: Invoice80Item[]) {
   const products = items.map((item) => `${item.product_name} x${item.quantity}`).join(' | ')
   return [
-    'ShopDesk OS',
+    'Guatapo SRL',
+    'RNC: 131974661',
     `Factura: ${sale.invoice_number || sale.id}`,
     sale.ncf ? `NCF: ${sale.ncf}` : null,
     `Fecha: ${receiptDate(sale.created_at)}`,

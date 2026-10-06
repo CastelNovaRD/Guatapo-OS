@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
+import { supabase } from '@/lib/supabase'
 import { formatDateTime, formatMoney } from '@/lib/format'
 import ProductGallery from '@/components/inventory/ProductGallery'
 import { getCurrentStoreId } from '@/lib/store-context'
 import { productMatchesSearch } from '@/lib/product-search'
+import { uploadProductImageOrFallback } from '@/lib/image-upload'
 import { logAudit } from '@/lib/audit'
 import ExportModal from '@/components/export/ExportModal'
 import ImportModal from '@/components/importing/ImportModal'
@@ -40,11 +42,13 @@ type Product = {
   image_url: string | null
   cost: number
   sale_price: number
+  coop_price: number | null
   stock: number
   product_type: string
   category: string | null
   active: boolean | null
   show_on_website: boolean | null
+  web_visibility: string | null
   featured: boolean | null
   short_description: string | null
   slug: string | null
@@ -59,7 +63,6 @@ type Category = {
 }
 
 type ProductTypeOption = {
-  id?: string
   value: string
   label: string
 }
@@ -72,23 +75,6 @@ type InventorySummary = {
   out_of_stock_count: number
 }
 
-type InventorySummaryApi = {
-  totalProducts: number
-  activeProducts: number
-  lowStockProducts: number
-  outOfStockProducts: number
-  totalStockUnits: number
-  inventoryCostValue: number
-  inventorySaleValue: number
-}
-
-type ApiProduct = Omit<Product, 'image_url' | 'product_type' | 'category'> & {
-  category_id?: string | null
-  product_type_id?: string | null
-  category_name?: string | null
-  product_type_value?: string | null
-}
-
 const emptyInventorySummary: InventorySummary = {
   active_count: 0,
   inventory_value: 0,
@@ -97,37 +83,17 @@ const emptyInventorySummary: InventorySummary = {
   out_of_stock_count: 0,
 }
 
-async function inventoryApi<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
-  })
-  const body = await response.json().catch(() => null) as { error?: string } | T | null
-
-  if (!response.ok) {
-    const message = body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
-      ? body.error
-      : `Error de API (${response.status})`
-    throw new Error(message)
-  }
-
-  return body as T
-}
-
-function productFromApi(product: ApiProduct): Product {
-  return {
-    ...product,
-    image_url: null,
-    product_type: product.product_type_value || '',
-    category: product.category_name || null,
-    cost: Number(product.cost || 0),
-    sale_price: Number(product.sale_price || 0),
-    stock: Number(product.stock || 0),
-    active: product.active !== false,
-    show_on_website: product.show_on_website === true,
-    featured: product.featured === true,
-  }
-}
+const DEFAULT_PRODUCT_TYPES: ProductTypeOption[] = [
+  { value: 'normal', label: 'Normal' },
+  { value: 'phone', label: 'Celular' },
+  { value: 'tablet', label: 'Tablet' },
+  { value: 'laptop', label: 'Laptop' },
+  { value: 'accessory', label: 'Accesorio' },
+  { value: 'adapter', label: 'Adaptador' },
+  { value: 'digital_product', label: 'Producto digital' },
+  { value: 'console', label: 'Consola' },
+  { value: 'tv', label: 'TV' },
+]
 
 type Movement = {
   id: string
@@ -165,12 +131,6 @@ type DamagedInventoryItem = {
   } | null
 }
 
-type DamagedInventoryApiItem = Omit<DamagedInventoryItem, 'quantity' | 'products'> & {
-  quantity: string | number
-  product_name?: string
-  product_sku?: string | null
-}
-
 type ProductForm = {
   name: string
   sku: string
@@ -178,11 +138,13 @@ type ProductForm = {
   image_url: string
   cost: string
   sale_price: string
+  coop_price: string
   stock: string
   product_type: string
   category: string
   active: boolean
   show_on_website: boolean
+  web_visibility: string
   featured: boolean
   short_description: string
   slug: string
@@ -205,11 +167,13 @@ const emptyForm: ProductForm = {
   image_url: '',
   cost: '',
   sale_price: '',
+  coop_price: '',
   stock: '',
-  product_type: '',
+  product_type: 'normal',
   category: '',
   active: true,
   show_on_website: true,
+  web_visibility: 'normal',
   featured: false,
   short_description: '',
   slug: '',
@@ -365,13 +329,8 @@ export default function InventarioPage() {
 function getProductMainImage(product: Product) {
   const images = productImages.filter((img) => img.product_id === product.id)
   const primary = images.find((img) => img.is_primary)
-  const image = primary || images[0]
 
-  if (image?.id) {
-    return `/api/public/product-images/${encodeURIComponent(image.id)}`
-  }
-
-  return product.image_url || ''
+  return primary?.image_url || images[0]?.image_url || product.image_url
 }
 
   useEffect(() => {
@@ -390,18 +349,18 @@ function getProductMainImage(product: Product) {
     }
 
     const handleStorage = (event: StorageEvent) => {
-      if (event.key === 'shopdesk_inventory_updated_at') refreshInventorySilently()
+      if (event.key === 'guatapo_inventory_updated_at') refreshInventorySilently()
     }
 
     window.addEventListener('focus', refreshInventorySilently)
     window.addEventListener('storage', handleStorage)
-    window.addEventListener('shopdesk:inventory-updated', refreshInventorySilently)
+    window.addEventListener('guatapo:inventory-updated', refreshInventorySilently)
     document.addEventListener('visibilitychange', handleVisibility)
 
     return () => {
       window.removeEventListener('focus', refreshInventorySilently)
       window.removeEventListener('storage', handleStorage)
-      window.removeEventListener('shopdesk:inventory-updated', refreshInventorySilently)
+      window.removeEventListener('guatapo:inventory-updated', refreshInventorySilently)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
   }, [storeId, inventoryPage, productsPerPage, debouncedSearch, categoryFilter, activeFilter, stockFilter, stockMinFilter, stockMaxFilter])
@@ -429,28 +388,43 @@ function getProductMainImage(product: Product) {
       return alert('Este usuario no tiene una tienda asignada.')
     }
 
-    const [categoriesData, productTypesData, damagedData, summaryData] = await Promise.all([
-      inventoryApi<Category[]>('/api/categories'),
-      inventoryApi<ProductTypeOption[]>('/api/product-types'),
-      inventoryApi<DamagedInventoryApiItem[]>('/api/damaged-inventory'),
-      inventoryApi<InventorySummaryApi>('/api/inventory-summary'),
+    const [
+      { data: categoriesData },
+      { data: productTypesData },
+      { data: damagedData },
+    ] = await Promise.all([
+      supabase
+        .from('categories')
+        .select('id, name')
+        .eq('store_id', currentStoreId)
+        .eq('active', true)
+        .order('name'),
+      supabase
+        .from('product_types')
+        .select('value, label')
+        .eq('store_id', currentStoreId)
+        .eq('active', true)
+        .order('label'),
+      supabase
+        .from('damaged_inventory')
+        .select('id, product_id, sale_id, credit_note_id, imei, quantity, reason, notes, status, created_at, products(name, sku)')
+        .eq('store_id', currentStoreId)
+        .neq('status', 'restored')
+        .order('created_at', { ascending: false }),
     ])
+
+    const { data: summaryData } = await supabase.rpc('get_inventory_summary', { p_store_id: currentStoreId })
+    const summaryRow = Array.isArray(summaryData) ? summaryData[0] : summaryData
 
     setCategories(categoriesData || [])
     setProductTypes(productTypesData || [])
-    setDamagedInventory(damagedData.map((item) => ({
-      ...item,
-      quantity: Number(item.quantity || 0),
-      products: item.product_name
-        ? { name: item.product_name, sku: item.product_sku || null }
-        : null,
-    })))
+    setDamagedInventory((damagedData || []) as unknown as DamagedInventoryItem[])
     setInventorySummary({
-      active_count: Number(summaryData.activeProducts || 0),
-      inventory_value: Number(summaryData.inventoryCostValue || 0),
-      inventory_sale_value: Number(summaryData.inventorySaleValue || 0),
-      low_stock_count: Number(summaryData.lowStockProducts || 0),
-      out_of_stock_count: Number(summaryData.outOfStockProducts || 0),
+      active_count: Number(summaryRow?.active_count || 0),
+      inventory_value: Number(summaryRow?.inventory_value || 0),
+      inventory_sale_value: Number(summaryRow?.inventory_sale_value || 0),
+      low_stock_count: Number(summaryRow?.low_stock_count || 0),
+      out_of_stock_count: Number(summaryRow?.out_of_stock_count || 0),
     })
     if (!options.silent) setLoading(false)
   }
@@ -462,48 +436,59 @@ function getProductMainImage(product: Product) {
     setInventoryError('')
 
     const from = (inventoryPage - 1) * productsPerPage
+    const to = from + productsPerPage - 1
     const cleanSearch = debouncedSearch.replace(/[%_]/g, '').trim()
 
-    try {
-      const params = new URLSearchParams({ limit: String(productsPerPage), offset: String(from) })
-      if (cleanSearch) params.set('search', cleanSearch)
-      const selectedCategory = categories.find((category) => category.name === categoryFilter)
-      if (selectedCategory) params.set('categoryId', selectedCategory.id)
-      if (activeFilter !== 'all') params.set('active', String(activeFilter === 'active'))
-      if (stockFilter === 'low') {
-        params.set('stockMin', '0.000001')
-        params.set('stockMax', '2')
-      }
-      if (stockFilter === 'out') params.set('stockMax', '0')
-      if (stockMinFilter !== '') params.set('stockMin', stockMinFilter)
-      if (stockMaxFilter !== '') params.set('stockMax', stockMaxFilter)
+    let query = supabase
+      .from('products')
+      .select('id, name, sku, barcode, image_url, cost, sale_price, coop_price, stock, product_type, category, active, show_on_website, web_visibility, featured, short_description, slug, full_description, specs, updated_at', { count: 'exact' })
+      .eq('store_id', currentStoreId)
 
-      const data = await inventoryApi<ApiProduct[]>(`/api/products?${params.toString()}`)
-      const pageProducts = data.map(productFromApi)
+    if (cleanSearch) {
+      query = query.or(`name.ilike.%${cleanSearch}%,sku.ilike.%${cleanSearch}%,barcode.ilike.%${cleanSearch}%,category.ilike.%${cleanSearch}%`)
+    }
 
-      setInventoryError('')
-      setProducts(pageProducts)
-      // The current products API is cursor/offset based and does not expose a count.
-      // Keep pagination usable by advancing while a complete page is returned.
-      setTotalProducts(from + pageProducts.length + (pageProducts.length === productsPerPage ? 1 : 0))
+    if (categoryFilter) query = query.eq('category', categoryFilter)
+    if (activeFilter === 'active') query = query.neq('active', false)
+    if (activeFilter === 'inactive') query = query.eq('active', false)
+    if (stockFilter === 'low') query = query.gt('stock', 0).lte('stock', 2)
+    if (stockFilter === 'out') query = query.lte('stock', 0)
+    if (stockMinFilter !== '') query = query.gte('stock', Number(stockMinFilter))
+    if (stockMaxFilter !== '') query = query.lte('stock', Number(stockMaxFilter))
 
-      if (pageProducts.length > 0) {
-        const imageGroups = await Promise.all(
-          pageProducts.map((product) => inventoryApi<ProductImage[]>(`/api/products/${product.id}/images`))
-        )
-        setProductImages(imageGroups.flat())
-      } else {
-        setProductImages([])
-      }
-    } catch (error) {
+    const { data, error, count } = await query
+      .order('created_at', { ascending: false })
+      .range(from, to)
+
+    if (error) {
       if (!options.silent) {
         setProducts([])
         setProductImages([])
         setTotalProducts(0)
       }
-      setInventoryError('Error cargando inventario: ' + (error instanceof Error ? error.message : 'Error desconocido'))
+      setInventoryError('Error cargando inventario: ' + error.message)
       if (!options.silent) setLoading(false)
       return
+    }
+
+    const pageProducts = data || []
+    setInventoryError('')
+    setProducts(pageProducts)
+    setTotalProducts(count || 0)
+
+    const productIds = pageProducts.map((product) => product.id)
+
+    if (productIds.length > 0) {
+      const { data: imagesData } = await supabase
+        .from('product_images')
+        .select('id, product_id, image_url, is_primary, sort_order')
+        .eq('store_id', currentStoreId)
+        .in('product_id', productIds)
+        .order('sort_order')
+
+      setProductImages(imagesData || [])
+    } else {
+      setProductImages([])
     }
 
     if (!options.silent) setLoading(false)
@@ -530,6 +515,21 @@ function getProductMainImage(product: Product) {
 
     return Array.from(names).sort((a, b) => a.localeCompare(b))
   }, [categories, products])
+
+  const allProductTypes = useMemo(() => {
+    const options = new Map<string, string>()
+
+    DEFAULT_PRODUCT_TYPES.forEach((type) => options.set(type.value, type.label))
+    productTypes.forEach((type) => options.set(type.value, type.label))
+
+    products.forEach((product) => {
+      if (product.product_type && !options.has(product.product_type)) {
+        options.set(product.product_type, product.product_type)
+      }
+    })
+
+    return Array.from(options.entries()).map(([value, label]) => ({ value, label }))
+  }, [productTypes, products])
 
   const damagedByProduct = useMemo(() => {
     const totals = new Map<string, number>()
@@ -577,12 +577,13 @@ function getProductMainImage(product: Product) {
       image_url: product.image_url || '',
       cost: String(product.cost || ''),
       sale_price: String(product.sale_price || ''),
+      coop_price: String(product.coop_price || ''),
       stock: String(product.stock || ''),
-      // Preserve an existing technical type without exposing it as a commercial selector.
-      product_type: product.product_type || '',
+      product_type: product.product_type || 'normal',
       category: product.category || '',
       active: product.active !== false,
       show_on_website: product.show_on_website !== false,
+      web_visibility: product.web_visibility || (product.show_on_website === false ? 'hidden' : 'normal'),
       featured: product.featured === true,
       short_description: product.short_description || '',
       slug: product.slug || '',
@@ -620,49 +621,44 @@ async function uploadProductImage(file: File) {
     return
   }
 
-  if (await uploadProductImageForProduct(file, editingProduct.id)) {
-    await refreshInventory({ silent: true })
-  }
+  await uploadProductImageForProduct(file, editingProduct.id)
+  await refreshInventory({ silent: true })
 }
 
 async function uploadProductImageForProduct(file: File, productId: string, sortOffset = 0) {
+  if (!storeId) return
+
+  const fileExt = file.name.split('.').pop()
+  const fileName = `${productId}-${Date.now()}-${Math.random()
+    .toString(36)
+    .substring(2)}.${fileExt}`
+
+  let imageUrl = ''
+
   try {
-    const existingImages = productImages.filter(
-      (img) => img.product_id === productId
-    )
-    const isFirstImage = existingImages.length === 0 && sortOffset === 0
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('isPrimary', String(isFirstImage))
-    formData.append('sortOrder', String(existingImages.length + sortOffset + 1))
+    imageUrl = await uploadProductImageOrFallback(file, fileName)
+  } catch (error) {
+    alert('Error subiendo imagen: ' + (error instanceof Error ? error.message : 'Error desconocido'))
+    return
+  }
 
-    const response = await fetch(`/api/products/${productId}/images/upload`, {
-      method: 'POST',
-      body: formData,
-    })
-    const result = await response.json().catch(() => null) as {
-      image?: ProductImage
-      imageUrl?: string
-    } | null
+  const existingImages = productImages.filter(
+    (img) => img.product_id === productId
+  )
 
-    if (!response.ok || !result?.image || !result.imageUrl) {
-      alert('Error subiendo imagen. Inténtalo nuevamente.')
-      return false
-    }
+  const isFirstImage = existingImages.length === 0 && sortOffset === 0
 
-    const uploadedImage = { ...result.image, image_url: result.imageUrl }
-    setProductImages((current) => [
-      ...current
-        .filter((image) => image.id !== uploadedImage.id)
-        .map((image) => image.product_id === productId && uploadedImage.is_primary
-          ? { ...image, is_primary: false }
-          : image),
-      uploadedImage,
-    ])
-    return true
-  } catch {
-    alert('Error subiendo imagen. Inténtalo nuevamente.')
-    return false
+  const { error: insertError } = await supabase.from('product_images').insert({
+    store_id: storeId,
+    product_id: productId,
+    image_url: imageUrl,
+    is_primary: isFirstImage,
+    sort_order: existingImages.length + sortOffset + 1,
+  })
+
+  if (insertError) {
+    alert('Imagen subida, pero no se guardó en galería: ' + insertError.message)
+    return
   }
 }
 
@@ -674,52 +670,40 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
 
     setSaving(true)
 
-    let categoryId = categories.find((category) => category.name === form.category.trim())?.id || null
-
-    try {
-      if (form.category.trim() && !categoryId) {
-        const category = await inventoryApi<Category>('/api/categories', {
-          method: 'POST',
-          body: JSON.stringify({ name: form.category.trim() }),
-        })
-        categoryId = category.id
-        setCategories((current) => [...current, category].sort((a, b) => a.name.localeCompare(b.name)))
-      }
-    } catch (error) {
-      setSaving(false)
-      return alert('Error guardando categoría: ' + (error instanceof Error ? error.message : 'Error desconocido'))
-    }
-
-    const productTypeId = productTypes.find((type) => type.value === form.product_type)?.id || null
     const payload = {
-      categoryId,
-      productTypeId,
+      store_id: storeId,
       name: form.name.trim(),
       sku: form.sku.trim() || null,
       barcode: form.barcode.trim() || null,
+      image_url: form.image_url.trim() || null,
       cost: Number(form.cost || 0),
-      salePrice: Number(form.sale_price || 0),
+      sale_price: Number(form.sale_price || 0),
+      coop_price: Number(form.coop_price || 0),
       stock: Number(form.stock || 0),
+      product_type: form.product_type,
+      category: form.category || null,
       active: form.active,
-      showOnWebsite: form.show_on_website,
+      show_on_website: form.web_visibility === 'normal' || form.web_visibility === 'both',
+      web_visibility: form.web_visibility,
       featured: form.featured,
-      shortDescription: form.short_description.trim() || null,
+      short_description: form.short_description.trim() || null,
       slug: form.slug.trim() || null,
-      fullDescription: form.full_description.trim() || null,
+      full_description: form.full_description.trim() || null,
       specs: buildProductSpecs(form),
     }
 
     let savedProductId = editingProduct?.id || ''
 
     if (editingProduct) {
-      try {
-        await inventoryApi(`/api/products/${editingProduct.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify(payload),
-        })
-      } catch (error) {
+      const { error } = await supabase
+        .from('products')
+        .update(payload)
+        .eq('store_id', storeId)
+        .eq('id', editingProduct.id)
+
+      if (error) {
         setSaving(false)
-        return alert('Error actualizando producto: ' + (error instanceof Error ? error.message : 'Error desconocido'))
+        return alert('Error actualizando producto: ' + error.message)
       }
     
       await logAudit({
@@ -733,15 +717,15 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
         afterData: payload,
       })
     } else {
-      let createdProduct: { id: string }
-      try {
-        createdProduct = await inventoryApi<{ id: string }>('/api/products', {
-          method: 'POST',
-          body: JSON.stringify(payload),
-        })
-      } catch (error) {
+      const { data: createdProduct, error } = await supabase
+        .from('products')
+        .insert(payload)
+        .select('id')
+        .single()
+
+      if (error) {
         setSaving(false)
-        return alert('Error creando producto: ' + (error instanceof Error ? error.message : 'Error desconocido'))
+        return alert('Error creando producto: ' + error.message)
       }
 
       savedProductId = createdProduct.id
@@ -763,6 +747,17 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
       }
     }
 
+    if (form.category.trim()) {
+      await supabase.from('categories').upsert(
+        {
+          store_id: storeId,
+          name: form.category.trim(),
+          active: true,
+        },
+        { onConflict: 'store_id,name' }
+      )
+    }
+
     setSaving(false)
     setModalOpen(false)
     setEditingProduct(null)
@@ -774,14 +769,13 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
   async function toggleProductActive(product: Product) {
     const isActive = product.active !== false
 
-    try {
-      await inventoryApi(`/api/products/${product.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ active: !isActive }),
-      })
-    } catch (error) {
-      return alert('Error cambiando estado: ' + (error instanceof Error ? error.message : 'Error desconocido'))
-    }
+    const { error } = await supabase
+      .from('products')
+      .update({ active: !isActive })
+      .eq('store_id', storeId)
+      .eq('id', product.id)
+
+    if (error) return alert('Error cambiando estado: ' + error.message)
 
     
     await logAudit({
@@ -799,13 +793,13 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
   }
 
   async function deleteProduct(product: Product) {
-  if (!confirm(`¿Eliminar "${product.name}"?`)) return
+    if (!confirm(`¿Eliminar "${product.name}"?`)) return
 
-  try {
-    await inventoryApi(`/api/products/${product.id}`, {
-      method: 'DELETE',
-    })
+    const { error } = await supabase.from('products').delete().eq('store_id', storeId).eq('id', product.id)
 
+    if (error) return alert('Error eliminando producto: ' + error.message)
+
+    
     await logAudit({
       storeId,
       module: 'inventario',
@@ -813,23 +807,11 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
       entityType: 'product',
       entityId: product.id,
       summary: 'Producto eliminado: ' + product.name + '.',
-      beforeData: {
-        name: product.name,
-        sku: product.sku,
-        barcode: product.barcode,
-        stock: product.stock,
-      },
-      afterData: null,
+      beforeData: product,
     })
 
     void refreshInventory({ silent: true })
-  } catch (error) {
-    alert(
-      'No se pudo eliminar el producto: ' +
-      (error instanceof Error ? error.message : 'Error desconocido')
-    )
   }
-}
 
   function openStockModal(product: Product) {
     setStockProduct(product)
@@ -846,29 +828,26 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
     const updatedStock = Number(newStock || 0)
     const difference = updatedStock - previousStock
 
-    if (!Number.isFinite(updatedStock) || updatedStock < 0) {
-      return alert('El stock debe ser un número mayor o igual a cero.')
-    }
+    const { error: updateError } = await supabase
+      .from('products')
+      .update({ stock: updatedStock })
+      .eq('store_id', storeId)
+      .eq('id', stockProduct.id)
 
-    if (difference === 0) {
-      setStockModal(false)
-      return
-    }
+    if (updateError) return alert('Error actualizando stock: ' + updateError.message)
 
-    try {
-      await inventoryApi('/api/inventory-movements', {
-        method: 'POST',
-        body: JSON.stringify({
-          productId: stockProduct.id,
-          movementType: 'adjustment',
-          quantity: difference,
-          referenceType: 'manual_adjustment',
-          notes: stockNote || 'Ajuste manual de inventario',
-        }),
-      })
-    } catch (error) {
-      return alert('Error actualizando stock: ' + (error instanceof Error ? error.message : 'Error desconocido'))
-    }
+    const { error: movementError } = await supabase.from('inventory_movements').insert({
+      store_id: storeId,
+      product_id: stockProduct.id,
+      movement_type: 'adjustment',
+      quantity: difference,
+      previous_stock: previousStock,
+      new_stock: updatedStock,
+      reference_type: 'manual_adjustment',
+      notes: stockNote || 'Ajuste manual de inventario',
+    })
+
+    if (movementError) return alert('Stock actualizado, pero error guardando movimiento: ' + movementError.message)
 
     
     await logAudit({
@@ -892,23 +871,27 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
     if (!storeId) throw new Error('Este usuario no tiene una tienda asignada.')
     if (exportScope === 'page') return products
 
-    const pageSize = 200
+    const pageSize = 1000
     let from = 0
     const allProducts: Product[] = []
 
     while (true) {
-      const params = new URLSearchParams({ limit: String(pageSize), offset: String(from) })
-      if (exportScope === 'active' || exportScope === 'low' || exportScope === 'out') params.set('active', 'true')
-      if (exportScope === 'low') {
-        params.set('stockMin', '0.000001')
-        params.set('stockMax', '2')
-      }
-      if (exportScope === 'out') params.set('stockMax', '0')
-      if (exportScope === 'category' && exportCategory) {
-        const category = categories.find((item) => item.name === exportCategory)
-        if (category) params.set('categoryId', category.id)
-      }
-      const batch = (await inventoryApi<ApiProduct[]>(`/api/products?${params.toString()}`)).map(productFromApi)
+      let query = supabase
+        .from('products')
+        .select('id, name, sku, barcode, image_url, cost, sale_price, coop_price, stock, product_type, category, active, show_on_website, web_visibility, featured, short_description, slug, full_description, specs, updated_at')
+        .eq('store_id', storeId)
+
+      if (exportScope === 'active') query = query.neq('active', false)
+      if (exportScope === 'low') query = query.neq('active', false).gt('stock', 0).lte('stock', 2)
+      if (exportScope === 'out') query = query.neq('active', false).lte('stock', 0)
+      if (exportScope === 'category' && exportCategory) query = query.eq('category', exportCategory)
+
+      const { data, error } = await query
+        .order('created_at', { ascending: false })
+        .range(from, from + pageSize - 1)
+
+      if (error) throw error
+      const batch = (data || []) as Product[]
       allProducts.push(...batch)
       if (batch.length < pageSize) break
       from += pageSize
@@ -920,11 +903,18 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
 
   async function fetchAllInventoryProductsForImport() {
     if (!storeId) throw new Error('Este usuario no tiene una tienda asignada.')
-    const pageSize = 200
+    const pageSize = 1000
     let from = 0
     const allProducts: Product[] = []
     while (true) {
-      const batch = (await inventoryApi<ApiProduct[]>(`/api/products?limit=${pageSize}&offset=${from}`)).map(productFromApi)
+      const { data, error } = await supabase
+        .from('products')
+        .select('id, name, sku, barcode, image_url, cost, sale_price, coop_price, stock, product_type, category, active, show_on_website, web_visibility, featured, short_description, slug, full_description, specs, updated_at')
+        .eq('store_id', storeId)
+        .order('created_at', { ascending: false })
+        .range(from, from + pageSize - 1)
+      if (error) throw error
+      const batch = (data || []) as Product[]
       allProducts.push(...batch)
       if (batch.length < pageSize) break
       from += pageSize
@@ -997,18 +987,20 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
     setKardexProduct(product)
     setKardexModal(true)
 
-    try {
-      const data = await inventoryApi<Movement[]>(`/api/inventory-movements?productId=${encodeURIComponent(product.id)}`)
-      setMovements(data.map((movement) => ({
-        ...movement,
-        quantity: Number(movement.quantity || 0),
-        previous_stock: Number(movement.previous_stock || 0),
-        new_stock: Number(movement.new_stock || 0),
-      })))
-    } catch (error) {
-      alert('Error cargando Kardex: ' + (error instanceof Error ? error.message : 'Error desconocido'))
+    const { data, error } = await supabase
+      .from('inventory_movements')
+      .select('id, movement_type, quantity, previous_stock, new_stock, reference_type, notes, created_at')
+      .eq('store_id', storeId)
+      .eq('product_id', product.id)
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      alert('Error cargando Kardex: ' + error.message)
       setMovements([])
+      return
     }
+
+    setMovements(data || [])
   }
 
   async function restoreDamagedItem(item: DamagedInventoryItem) {
@@ -1028,14 +1020,14 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
     if (notes === null) return
     if (!confirm('¿Seguro que quieres reintegrar este producto al inventario disponible?')) return
 
-    try {
-      await inventoryApi(`/api/damaged-inventory/${item.id}/restore`, {
-        method: 'POST',
-        body: JSON.stringify({ quantity, notes: notes || null }),
-      })
-    } catch (error) {
-      return alert('No pude reintegrar el producto: ' + (error instanceof Error ? error.message : 'Error desconocido'))
-    }
+    const { error } = await supabase.rpc('restore_damaged_inventory', {
+      p_store_id: storeId,
+      p_damaged_inventory_id: item.id,
+      p_quantity: quantity,
+      p_notes: notes || null,
+    })
+
+    if (error) return alert('No pude reintegrar el producto: ' + error.message)
 
     await refreshInventory({ silent: true })
   }
@@ -1045,7 +1037,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
       <div className="mb-8 flex items-start justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-3 text-3xl font-bold">
-            <Package className="text-castelnova-600" />
+            <Package className="text-emerald-500" />
             Inventario
           </h1>
           <p className="text-zinc-500">
@@ -1066,7 +1058,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
           <button
             type="button"
             onClick={() => setImportModalOpen(true)}
-            className="flex items-center gap-2 rounded-xl border border-castelnova-200 bg-castelnova-50 px-5 py-3 font-semibold text-castelnova-700 hover:bg-castelnova-100"
+            className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-5 py-3 font-semibold text-emerald-700 hover:bg-emerald-100"
           >
             <Upload size={18} />
             Importación
@@ -1074,7 +1066,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
 
           <button
             onClick={openNewProduct}
-            className="flex items-center gap-2 rounded-xl bg-castelnova-600 px-5 py-3 font-semibold text-white hover:bg-castelnova-700"
+            className="flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 font-semibold text-white hover:bg-emerald-600"
           >
             <Plus size={18} />
             Nuevo Producto
@@ -1114,7 +1106,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
 
       <div className="mb-3">
         <div className="flex items-center gap-3 rounded-2xl border border-zinc-200 bg-white px-4 py-3 shadow-sm">
-          <Search className="text-castelnova-600" size={20} />
+          <Search className="text-emerald-500" size={20} />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -1130,7 +1122,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
           <select
             value={activeFilter}
             onChange={(e) => setActiveFilter(e.target.value as 'all' | 'active' | 'inactive')}
-            className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 outline-none focus:border-castelnova-600"
+            className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 outline-none focus:border-emerald-500"
           >
             <option value="all">Todas</option>
             <option value="active">Activo</option>
@@ -1143,7 +1135,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
           <select
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
-            className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 outline-none focus:border-castelnova-600"
+            className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 outline-none focus:border-emerald-500"
           >
             <option value="">Todas las categorías</option>
             {allCategoryNames.map((categoryName) => (
@@ -1163,7 +1155,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
               value={stockMinFilter}
               onChange={(e) => setStockMinFilter(e.target.value)}
               placeholder="Min."
-              className="h-11 w-full border-b border-zinc-200 bg-white px-3 text-sm outline-none focus:bg-castelnova-50"
+              className="h-11 w-full border-b border-zinc-200 bg-white px-3 text-sm outline-none focus:bg-emerald-50"
             />
             <input
               type="number"
@@ -1171,7 +1163,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
               value={stockMaxFilter}
               onChange={(e) => setStockMaxFilter(e.target.value)}
               placeholder="Máx."
-              className="h-11 w-full bg-white px-3 text-sm outline-none focus:bg-castelnova-50"
+              className="h-11 w-full bg-white px-3 text-sm outline-none focus:bg-emerald-50"
             />
           </div>
         </div>
@@ -1192,7 +1184,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
             <select
               value={productsPerPage}
               onChange={(e) => setProductsPerPage(Number(e.target.value))}
-              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-zinc-950 outline-none focus:border-castelnova-600"
+              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-zinc-950 outline-none focus:border-emerald-500"
             >
               {[10, 20, 50, 100].map((size) => (
                 <option key={size} value={size}>{size}</option>
@@ -1243,7 +1235,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
                   return (
                     <tr key={product.id} className="border-b border-zinc-100 align-middle hover:bg-zinc-50">
                       <td className="p-3">
-                        <input type="checkbox" className="h-4 w-4 rounded border-zinc-300 text-castelnova-600" aria-label={`Seleccionar ${product.name}`} />
+                        <input type="checkbox" className="h-4 w-4 rounded border-zinc-300 text-emerald-600" aria-label={`Seleccionar ${product.name}`} />
                       </td>
                       <td className="p-3">
                         <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-zinc-100">
@@ -1256,6 +1248,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
                       </td>
                       <td className="max-w-[260px] p-3">
                         <p className="font-bold text-zinc-950 line-clamp-2">{product.name}</p>
+                        <p className="text-xs text-zinc-500">{product.product_type || 'normal'}</p>
                       </td>
                       <td className="p-3 font-mono text-xs text-zinc-600">{product.sku || '-'}</td>
                       <td className="p-3 text-zinc-700">{product.category || '-'}</td>
@@ -1414,6 +1407,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
               />
               <Input label="Costo" value={form.cost} type="number" onChange={(v) => updateForm('cost', v)} />
               <Input label="Precio venta" value={form.sale_price} type="number" onChange={(v) => updateForm('sale_price', v)} />
+              <Input label="Precio cooperativa" value={form.coop_price} type="number" onChange={(v) => updateForm('coop_price', v)} />
               <Input label="Stock" value={form.stock} type="number" onChange={(v) => updateForm('stock', v)} />
 
               <div>
@@ -1423,7 +1417,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
                   onChange={(e) => updateForm('category', e.target.value)}
                   list="product-category-options"
                   placeholder="Selecciona o escribe una categoría"
-                  className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600"
+                  className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
                 />
                 <datalist id="product-category-options">
                   {allCategoryNames.map((categoryName) => (
@@ -1433,11 +1427,26 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
               </div>
 
               <div>
+                <label className="mb-2 block text-sm text-zinc-500">Tipo</label>
+                <select
+                  value={form.product_type}
+                  onChange={(e) => updateForm('product_type', e.target.value)}
+                  className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
+                >
+                  {allProductTypes.map((type) => (
+                    <option key={type.value} value={type.value}>
+                      {type.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
                 <label className="mb-2 block text-sm text-zinc-500">Estado</label>
                 <select
                   value={form.active ? 'active' : 'inactive'}
                   onChange={(e) => updateForm('active', e.target.value === 'active')}
-                  className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600"
+                  className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
                 >
                   <option value="active">Activo</option>
                   <option value="inactive">Inactivo</option>
@@ -1445,12 +1454,12 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
               </div>
 
               <div className="md:col-span-3 mt-8">
-  <div className="rounded-xl bg-castelnova-50 border border-castelnova-200 px-4 py-3">
-    <h3 className="font-bold text-castelnova-700 text-lg">
+  <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3">
+    <h3 className="font-bold text-emerald-700 text-lg">
       Configuración de la página web
     </h3>
 
-    <p className="text-sm text-castelnova-600 mt-1">
+    <p className="text-sm text-emerald-600 mt-1">
       Configura cómo aparecerá este producto en la tienda online.
     </p>
   </div>
@@ -1460,12 +1469,14 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
   <label className="mb-2 block text-sm text-zinc-500">Página web</label>
 
   <select
-    value={form.show_on_website ? 'yes' : 'no'}
-    onChange={(e) => updateForm('show_on_website', e.target.value === 'yes')}
-    className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600"
+    value={form.web_visibility}
+    onChange={(e) => updateForm('web_visibility', e.target.value)}
+    className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
   >
-    <option value="yes">Mostrar en tienda web</option>
-    <option value="no">No mostrar</option>
+    <option value="both">Ambas webs</option>
+    <option value="normal">Web normal</option>
+    <option value="coop">Web cooperativa</option>
+    <option value="hidden">No mostrar</option>
   </select>
 </div>
 
@@ -1477,7 +1488,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
     onChange={(e) =>
       updateForm('featured', e.target.value === 'yes')
     }
-    className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600"
+    className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
   >
     <option value="no">No</option>
     <option value="yes">Sí</option>
@@ -1510,7 +1521,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
     value={form.full_description}
     onChange={(e) => updateForm('full_description', e.target.value)}
     rows={5}
-    className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600"
+    className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
     placeholder="Descripción completa del producto para la página individual..."
   />
 </div>
@@ -1541,7 +1552,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
       updateForm('short_description', e.target.value)
     }
     rows={4}
-    className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600"
+    className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
     placeholder="Descripción que aparecerá en la página web..."
   />
 </div>
@@ -1561,9 +1572,9 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
         .filter((file) => file.type.startsWith('image/'))
         .forEach((file) => uploadProductImage(file))
     }}
-    className="rounded-2xl border-2 border-dashed border-zinc-300 bg-zinc-50 p-6 text-center hover:border-castelnova-600"
+    className="rounded-2xl border-2 border-dashed border-zinc-300 bg-zinc-50 p-6 text-center hover:border-emerald-500"
   >
-    <Upload className="mx-auto text-castelnova-600" size={32} />
+    <Upload className="mx-auto text-emerald-500" size={32} />
 
     <p className="mt-3 font-semibold">
       Arrastra una imagen aquí
@@ -1585,7 +1596,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
   </div>
 
   {!editingProduct && pendingImages.length > 0 && (
-    <div className="mt-3 rounded-xl border border-castelnova-200 bg-castelnova-50 px-4 py-3 text-sm font-semibold text-castelnova-700">
+    <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
       {pendingImages.length} imagen(es) se subirán al guardar el producto.
     </div>
   )}
@@ -1594,7 +1605,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
     value={form.image_url}
     onChange={(e) => updateForm('image_url', e.target.value)}
     placeholder="O pega una URL de imagen..."
-    className="mt-4 w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600"
+    className="mt-4 w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
   />
 
   {form.image_url && (
@@ -1620,7 +1631,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
                 <button
                   type="submit"
                   disabled={saving}
-                  className="rounded-xl bg-castelnova-600 px-5 py-3 font-semibold text-white hover:bg-castelnova-700 disabled:opacity-50"
+                  className="rounded-xl bg-emerald-500 px-5 py-3 font-semibold text-white hover:bg-emerald-600 disabled:opacity-50"
                 >
                   {saving ? 'Guardando...' : editingProduct ? 'Guardar cambios' : 'Crear producto'}
                 </button>
@@ -1668,7 +1679,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
               <textarea
                 value={stockNote}
                 onChange={(e) => setStockNote(e.target.value)}
-                className="w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-castelnova-600"
+                className="w-full rounded-xl border border-zinc-300 px-4 py-3 outline-none focus:border-emerald-500"
                 placeholder="Ej: Llegó mercancía, ajuste por conteo físico..."
               />
             </div>
@@ -1683,7 +1694,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
 
               <button
                 onClick={saveStockAdjustment}
-                className="rounded-xl bg-castelnova-600 py-3 font-bold text-white hover:bg-castelnova-700"
+                className="rounded-xl bg-emerald-500 py-3 font-bold text-white hover:bg-emerald-600"
               >
                 Guardar ajuste
               </button>
@@ -1749,7 +1760,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
       <ImportModal
         open={importModalOpen}
         title="Importación de inventario"
-        templateName="inventario-shopdesk"
+        templateName="inventario-guatapo"
         preview={importPreview}
         loading={importLoading}
         committing={importCommitting}
@@ -1805,7 +1816,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block">
             <span className="mb-1 block text-sm font-bold text-zinc-700">Alcance</span>
-            <select value={exportScope} onChange={(e) => setExportScope(e.target.value as InventoryExportScope)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600">
+            <select value={exportScope} onChange={(e) => setExportScope(e.target.value as InventoryExportScope)} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500">
               <option value="all">Todo el inventario</option>
               <option value="page">Página actual</option>
               <option value="active">Solo productos activos</option>
@@ -1816,7 +1827,7 @@ async function uploadProductImageForProduct(file: File, productId: string, sortO
           </label>
           <label className="block">
             <span className="mb-1 block text-sm font-bold text-zinc-700">Categoría</span>
-            <select value={exportCategory} onChange={(e) => setExportCategory(e.target.value)} disabled={exportScope !== 'category'} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600 disabled:bg-zinc-100 disabled:text-zinc-400">
+            <select value={exportCategory} onChange={(e) => setExportCategory(e.target.value)} disabled={exportScope !== 'category'} className="w-full rounded-2xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500 disabled:bg-zinc-100 disabled:text-zinc-400">
               <option value="">Todas las categorías</option>
               {allCategoryNames.map((categoryName) => <option key={categoryName} value={categoryName}>{categoryName}</option>)}
             </select>
@@ -1903,7 +1914,7 @@ function StatCard({
         type="button"
         onClick={onClick}
         className={`min-w-0 overflow-hidden rounded-2xl border bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md ${
-          active ? 'border-castelnova-600 ring-2 ring-castelnova-100' : 'border-zinc-200'
+          active ? 'border-emerald-500 ring-2 ring-emerald-100' : 'border-zinc-200'
         }`}
       >
         {content}
@@ -1979,7 +1990,7 @@ function IconButton({
       className={`rounded-lg border border-zinc-200 p-2 ${
         danger
           ? 'text-red-500 hover:border-red-500'
-          : 'text-zinc-600 hover:border-castelnova-600 hover:text-castelnova-600'
+          : 'text-zinc-600 hover:border-emerald-500 hover:text-emerald-600'
       }`}
     >
       {children}
@@ -2008,7 +2019,7 @@ function Input({
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-castelnova-600"
+        className="w-full rounded-xl border border-zinc-300 bg-white px-4 py-3 outline-none focus:border-emerald-500"
       />
     </div>
   )
@@ -2030,7 +2041,7 @@ function InputWithAction({
   return (
     <div>
       <label className="mb-2 block text-sm text-zinc-500">{label}</label>
-      <div className="flex overflow-hidden rounded-xl border border-zinc-300 bg-white focus-within:border-castelnova-600">
+      <div className="flex overflow-hidden rounded-xl border border-zinc-300 bg-white focus-within:border-emerald-500">
         <input
           value={value}
           onChange={(e) => onChange(e.target.value)}
@@ -2041,7 +2052,7 @@ function InputWithAction({
           onClick={onAction}
           title={actionLabel}
           aria-label={actionLabel}
-          className="border-l border-zinc-200 px-3 text-zinc-600 hover:bg-castelnova-50 hover:text-castelnova-700"
+          className="border-l border-zinc-200 px-3 text-zinc-600 hover:bg-emerald-50 hover:text-emerald-700"
         >
           <RefreshCcw size={18} />
         </button>
@@ -2049,6 +2060,10 @@ function InputWithAction({
     </div>
   )
 }
+
+
+
+
 
 
 

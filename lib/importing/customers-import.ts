@@ -1,4 +1,6 @@
 
+import { supabase } from '@/lib/supabase'
+import { logAudit } from '@/lib/audit'
 import { CUSTOMER_TEMPLATE_COLUMNS } from '@/lib/export/shared-templates'
 import { ImportMode, ImportPreview, ImportPreviewRow, normalizeDocument, normalizePhone, readExcelTable } from './excel-import'
 
@@ -42,20 +44,23 @@ export async function commitCustomersImport(params: { storeId: string; preview: 
   const validRows = params.preview.rows.filter((row) => !['error', 'duplicate', 'skip'].includes(row.action))
   let created = 0, updated = 0, omitted = params.preview.rows.length - validRows.length, errors = 0
   for (const row of validRows) {
-    const payload: Record<string, unknown> = {}
+    const payload: Record<string, unknown> = { store_id: params.storeId }
     const assign = (key: string, value: unknown) => { if (params.allowBlankClear || value !== null && value !== '') payload[key] = value }
     assign('full_name', row.data.full_name)
     assign('phone', row.data.phone)
     assign('cedula', row.data.cedula)
     if (row.existingId) {
-      const response = await fetch(`/api/customers/${row.existingId}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
-      if (!response.ok) { const body = await response.json() as { error?: string }; row.action = 'error'; row.errors.push(body.error || 'No se pudo actualizar el cliente.'); errors += 1; continue }
+      const { error } = await supabase.from('customers').update(payload).eq('store_id', params.storeId).eq('id', row.existingId)
+      if (error) { row.action = 'error'; row.errors.push(error.message); errors += 1; continue }
       updated += 1
+      await logAudit({ storeId: params.storeId, module: 'clientes', action: 'customer.import_update', entityType: 'customer', entityId: row.existingId, summary: `Cliente importado/actualizado: ${row.data.full_name}.`, afterData: payload })
     } else {
-      const response = await fetch('/api/customers', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
-      if (!response.ok) { const body = await response.json() as { error?: string }; row.action = 'error'; row.errors.push(body.error || 'No se pudo crear el cliente.'); errors += 1; continue }
+      const { data, error } = await supabase.from('customers').insert(payload).select('id').single()
+      if (error) { row.action = 'error'; row.errors.push(error.message); errors += 1; continue }
       created += 1
+      await logAudit({ storeId: params.storeId, module: 'clientes', action: 'customer.import_create', entityType: 'customer', entityId: data.id, summary: `Cliente importado: ${row.data.full_name}.`, afterData: payload })
     }
   }
+  await logAudit({ storeId: params.storeId, module: 'clientes', action: 'customers.import', summary: `Importacion de clientes: ${created} creados, ${updated} actualizados, ${omitted} omitidos, ${errors} errores.`, metadata: { created, updated, omitted, errors, mode: params.mode } })
   return { created, updated, omitted, errors }
 }

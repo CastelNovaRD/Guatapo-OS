@@ -1,13 +1,14 @@
 import type { ProductImage } from '@/lib/product-images'
 
-export const WHATSAPP_NUMBER = ''
-
-export const CART_STORAGE_KEY = 'shopdesk_cart'
+export const WHATSAPP_NUMBER = '18096361020'
+export const CART_STORAGE_KEY = 'guatapo_cart'
 
 export type WebProduct = {
   id: string
   name: string
   sale_price: number
+  coop_price?: number | null
+  web_visibility?: string | null
   stock: number
   category: string | null
   slug: string | null

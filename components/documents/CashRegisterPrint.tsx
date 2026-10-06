@@ -1,32 +1,37 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
+import { supabase } from '@/lib/supabase'
 import { formatDate, formatTime, formatMoney } from '@/lib/format'
+import { calculateCashRegisterTotals } from '@/lib/cash-register'
 
 type CashRegister = {
   id: string
+  store_id: string
   opened_at: string
   closed_at: string | null
   opening_amount: number
   closing_amount: number | null
+  total_sales: number
+  total_card_fee: number
+  total_profit: number
+  difference: number
   status: string
-  opened_by_name: string | null
-  closed_by_name: string | null
 }
 
-type CashRegisterSummary = {
-  totalSales: number
-  cashSales: number
-  cardSales: number
-  transferSales: number
-  creditNotePayments: number
-  cashRefunds: number
-  cashWithdrawals: number
-  expectedCash: number
-  totalCardFee: number
-  totalProfit: number
-  difference: number | null
+type SalePayment = {
+  id: string
+  total: number
+  card_fee: number | null
+  cash_received: number | null
+  cash_change: number | null
+  payment_method_id: string | null
+}
+
+type PaymentMethod = {
+  id: string
+  name: string
 }
 
 export default function CashRegisterPrint() {
@@ -34,35 +39,121 @@ export default function CashRegisterPrint() {
   const cashId = params.id as string
 
   const [cash, setCash] = useState<CashRegister | null>(null)
-  const [summary, setSummary] = useState<CashRegisterSummary | null>(null)
+  const [paymentBreakdown, setPaymentBreakdown] = useState({
+    cash: 0,
+    card: 0,
+    transfer: 0,
+    cashRefunds: 0,
+    withdrawals: 0,
+    expectedCash: 0,
+    creditNote: 0,
+  })
   const [loading, setLoading] = useState(true)
 
-  const loadCash = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [cashResponse, summaryResponse] = await Promise.all([
-        fetch(`/api/cash-registers/${encodeURIComponent(cashId)}`, { cache: 'no-store' }),
-        fetch(`/api/cash-registers/${encodeURIComponent(cashId)}/history-summary`, { cache: 'no-store' }),
-      ])
-      const [cashPayload, summaryPayload] = await Promise.all([
-        cashResponse.json().catch(() => null),
-        summaryResponse.json().catch(() => null),
-      ])
-      if (!cashResponse.ok || !cashPayload || !summaryResponse.ok || !summaryPayload) {
-        throw new Error('No se pudo cargar el cuadre.')
-      }
-      setCash(cashPayload as CashRegister)
-      setSummary(summaryPayload as CashRegisterSummary)
-    } catch (error) {
-      alert(error instanceof Error ? error.message : 'No se pudo cargar el cuadre.')
-    } finally {
-      setLoading(false)
+  async function loadPaymentBreakdown(register: CashRegister) {
+    const { data: salesData, error: salesError } = await supabase
+      .from('sales')
+      .select('id, total, card_fee, cash_received, cash_change, payment_method_id')
+      .eq('cash_register_id', register.id)
+
+    if (salesError) {
+      alert('Error cargando desglose de pagos: ' + salesError.message)
+      return
     }
-  }, [cashId])
+
+    const sales = (salesData || []) as SalePayment[]
+    const saleIds = sales.map((sale) => sale.id)
+    const methodIds = Array.from(
+      new Set(sales.map((sale) => sale.payment_method_id).filter(Boolean))
+    ) as string[]
+    const methodMap = new Map<string, string>()
+
+    if (methodIds.length > 0) {
+      const { data: methodsData } = await supabase
+        .from('payment_methods')
+        .select('id, name')
+        .in('id', methodIds)
+
+      ;((methodsData || []) as PaymentMethod[]).forEach((method) => {
+        methodMap.set(method.id, method.name.toLowerCase())
+      })
+    }
+
+    let detailedPayments: { sale_id: string | null; payment_method: string | null; amount: number | null; card_fee: number | null }[] = []
+
+    if (saleIds.length > 0) {
+      const { data: paymentRows } = await supabase
+        .from('sale_payments')
+        .select('sale_id, payment_method, amount, card_fee')
+        .in('sale_id', saleIds)
+
+      detailedPayments = paymentRows || []
+    }
+
+    let refunds: { sale_id: string | null; total: number; refund_method: string | null }[] = []
+
+    if (saleIds.length > 0) {
+      const { data: refundRows } = await supabase
+        .from('credit_notes')
+        .select('sale_id, total, refund_method')
+        .in('sale_id', saleIds)
+
+      refunds = refundRows || []
+    }
+
+    let movements: { movement_type: string | null; amount: number | null }[] = []
+
+    const { data: movementsData, error: movementsError } = await supabase
+      .from('cash_movements')
+      .select('movement_type, amount')
+      .eq('cash_register_id', register.id)
+
+    if (!movementsError) movements = movementsData || []
+
+    const totals = calculateCashRegisterTotals({
+      openingAmount: Number(register.opening_amount || 0),
+      countedCash: Number(register.closing_amount || 0),
+      sales,
+      refunds,
+      movements,
+      payments: detailedPayments,
+      paymentMethods: methodMap,
+    })
+
+    setPaymentBreakdown({
+      cash: totals.cashSales,
+      card: totals.cardSales,
+      transfer: totals.transferSales,
+      cashRefunds: totals.cashRefunds,
+      withdrawals: totals.cashWithdrawals,
+      expectedCash: totals.expectedCash,
+      creditNote: totals.creditSales,
+    })
+  }
+
+  async function loadCash() {
+    setLoading(true)
+
+    const { data, error } = await supabase
+      .from('cash_registers')
+      .select('*')
+      .eq('id', cashId)
+      .single()
+
+    if (error) {
+      alert('Error cargando cuadre: ' + error.message)
+      setLoading(false)
+      return
+    }
+
+    setCash(data)
+    await loadPaymentBreakdown(data)
+    setLoading(false)
+  }
 
   useEffect(() => {
     void Promise.resolve().then(loadCash)
-  }, [loadCash])
+  }, [])
 
   if (loading) {
     return <main className="p-6">Cargando cuadre...</main>
@@ -85,8 +176,10 @@ export default function CashRegisterPrint() {
 
       <section className="mx-auto w-[320px] bg-white p-4 text-sm shadow-xl print:w-[80mm] print:shadow-none">
         <div className="text-center">
-          <h1 className="text-2xl font-black">ShopDesk OS</h1>
+          <h1 className="text-2xl font-black">GUATAPO</h1>
           <p>Cuadre de caja</p>
+          <p>RNC: 131974661</p>
+          <p>809-636-1020</p>
         </div>
 
         <Divider />
@@ -101,30 +194,24 @@ export default function CashRegisterPrint() {
         <Divider />
 
         <div>
-          <Row label="Cajero apertura" value={cash.opened_by_name || '-'} />
-          <Row label="Cajero cierre" value={cash.closed_by_name || '-'} />
           <Row label="Efectivo inicial" value={formatMoney(cash.opening_amount)} />
-          <Row label="Ventas en efectivo" value={formatMoney(summary?.cashSales || 0)} />
-          <Row label="Ventas con tarjeta" value={formatMoney(summary?.cardSales || 0)} />
-          <Row label="Ventas por transferencia" value={formatMoney(summary?.transferSales || 0)} />
-          <Row label="Notas de crédito" value={formatMoney(summary?.creditNotePayments || 0)} />
-          <Row label="Retiros de caja" value={formatMoney(summary?.cashWithdrawals || 0)} />
-          <Row label="Comisión tarjeta" value={formatMoney(summary?.totalCardFee || 0)} />
-          <Row label="Ganancia estimada" value={formatMoney(summary?.totalProfit || 0)} />
+          <Row label="Ventas en efectivo" value={formatMoney(paymentBreakdown.cash)} />
+          <Row label="Ventas con tarjeta" value={formatMoney(paymentBreakdown.card)} />
+          <Row label="Ventas por transferencia" value={formatMoney(paymentBreakdown.transfer)} />
+          <Row label="Nota de credito" value={formatMoney(paymentBreakdown.creditNote)} />
+          <Row label="Devoluciones en efectivo" value={formatMoney(paymentBreakdown.cashRefunds)} />
+          <Row label="Retiros de caja" value={formatMoney(paymentBreakdown.withdrawals)} />
+          <Row label="Comision tarjeta" value={formatMoney(cash.total_card_fee)} />
+          <Row label="Ganancia estimada" value={formatMoney(cash.total_profit)} />
           <Row label="Efectivo contado" value={formatMoney(cash.closing_amount || 0)} />
-          <Row label="Efectivo esperado" value={formatMoney(summary?.expectedCash || 0)} />
-          <Row label="Descuadre" value={summary?.difference === null || summary?.difference === undefined ? '-' : formatMoney(summary.difference)} />
+          <Row label="Descuadre" value={formatMoney(cash.difference)} />
         </div>
 
         <Divider />
 
         <div className="flex items-center justify-between gap-3 py-2">
           <span className="text-xl font-black">Total</span>
-          <span className="text-2xl font-black">
-            {formatMoney(
-              summary?.totalSales || 0
-            )}
-          </span>
+          <span className="text-2xl font-black">{formatMoney(paymentBreakdown.cash + paymentBreakdown.card + paymentBreakdown.transfer)}</span>
         </div>
 
         <Divider />
@@ -138,7 +225,7 @@ export default function CashRegisterPrint() {
         <Divider />
 
         <p className="text-center text-xs">
-          Generado por CastelNova OS
+          Generado por CastelNova ERP
         </p>
       </section>
 

@@ -1,15 +1,6 @@
 import { QRCodeSVG } from 'qrcode.react'
 import InvoiceWarranty from './InvoiceWarranty'
-import {
-  Invoice80Customer,
-  Invoice80Item,
-  Invoice80PaymentMethod,
-  Invoice80Sale,
-  paymentMethodLabel,
-  receiptDate,
-  receiptMoney,
-  receiptQrValue,
-} from './invoice80-helpers'
+import { Invoice80Customer, Invoice80Item, Invoice80PaymentMethod, Invoice80Sale, paymentMethodLabel, receiptDate, receiptMoney, receiptQrValue } from './invoice80-helpers'
 
 type Props = {
   sale: Invoice80Sale
@@ -25,25 +16,17 @@ function DashedLine() {
 function ReceiptHeader() {
   return (
     <header className="text-center">
-      <img
-        src="/logo/logo-castelnova-os.png"
-        alt="CastelNova OS"
-        className="mx-auto h-auto w-full max-w-[74mm] object-contain grayscale"
-      />
+      <img src="/logo-guatapo-transparent.png" alt="Guatapo" className="mx-auto h-auto w-full max-w-[74mm] object-contain grayscale" />
       <div className="mt-1 text-[23px] leading-tight">
-        <p>ShopDesk OS</p>
+        <p>Guatapo SRL</p>
+        <p className="font-bold">RNC: 131974661</p>
+        <p>809-636-1020</p>
       </div>
     </header>
   )
 }
 
-function PaymentBlock({
-  sale,
-  paymentMethod,
-}: {
-  sale: Invoice80Sale
-  paymentMethod: Invoice80PaymentMethod | null
-}) {
+function PaymentBlock({ sale, paymentMethod }: { sale: Invoice80Sale; paymentMethod: Invoice80PaymentMethod | null }) {
   const method = paymentMethodLabel(sale, paymentMethod)
   const isCash = method.includes('EFECTIVO')
 
@@ -51,7 +34,6 @@ function PaymentBlock({
     <div className="mt-7 grid grid-cols-[1fr_1fr] gap-x-5 text-[17px] font-bold uppercase leading-tight">
       <span className="text-right">MET. PAGO</span>
       <span>{method}</span>
-
       {isCash && (
         <>
           <span className="text-right">RECIBIDO</span>
@@ -71,7 +53,6 @@ function TotalsBlock({ sale }: { sale: Invoice80Sale }) {
         <span className="text-right">Descuento</span>
         <span className="text-right">{receiptMoney(sale.discount)}</span>
       </div>
-
       <div className="flex items-end justify-center gap-2 text-[24px] font-black">
         <span>Total</span>
         <span>{receiptMoney(sale.total)}</span>
@@ -80,12 +61,7 @@ function TotalsBlock({ sale }: { sale: Invoice80Sale }) {
   )
 }
 
-export default function InvoiceQuick80({
-  sale,
-  items,
-  customer,
-  paymentMethod,
-}: Props) {
+export default function InvoiceQuick80({ sale, items, customer, paymentMethod }: Props) {
   const qrValue = receiptQrValue(sale, items)
 
   return (
@@ -94,47 +70,25 @@ export default function InvoiceQuick80({
 
       <div className="mt-8 text-[17px] font-bold leading-tight">
         <p>{receiptDate(sale.created_at)}</p>
-
-        {customer?.full_name && (
-          <p className="mt-1 text-[14px]">
-            CLIENTE: {customer.full_name}
-          </p>
-        )}
-
+        {customer?.full_name && <p className="mt-1 text-[14px]">CLIENTE: {customer.full_name}</p>}
         <div className="mt-2 flex items-start justify-between gap-2 uppercase">
-          <span className="min-w-0 whitespace-nowrap">
-            {sale.invoice_number || `FAC-${sale.id.slice(0, 7)}`}
-          </span>
-          <span className="max-w-[36mm] text-right text-[15px] leading-tight break-words">
-            {paymentMethodLabel(sale, paymentMethod)}
-          </span>
+          <span className="min-w-0 whitespace-nowrap">{sale.invoice_number || `FAC-${sale.id.slice(0, 7)}`}</span>
+          <span className="max-w-[36mm] text-right text-[15px] leading-tight break-words">{paymentMethodLabel(sale, paymentMethod)}</span>
         </div>
       </div>
 
       <DashedLine />
-
       <div className="grid grid-cols-[1fr_38px_104px] text-center text-[13px] font-bold uppercase">
         <span>Descripcion</span>
         <span>Catd.</span>
         <span>Valor</span>
       </div>
-
       <DashedLine />
 
       <div className="space-y-7 py-5 text-[13px] font-bold">
         {items.map((item, index) => (
-          <div
-            key={`${item.product_name}-${index}`}
-            className="grid break-inside-avoid grid-cols-[1fr_38px_104px] items-start gap-2"
-          >
-            <span className="uppercase leading-tight">
-              {item.product_name}
-              {item.imei && (
-                <span className="mt-1 block text-[11px] normal-case">
-                  IMEI: {item.imei}
-                </span>
-              )}
-            </span>
+          <div key={`${item.product_name}-${index}`} className="grid break-inside-avoid grid-cols-[1fr_38px_104px] items-start gap-2">
+            <span className="uppercase leading-tight">{item.product_name}{item.imei && <span className="mt-1 block text-[11px] normal-case">IMEI: {item.imei}</span>}</span>
             <span className="text-center">{item.quantity}</span>
             <span className="text-right">{receiptMoney(item.total)}</span>
           </div>
@@ -143,12 +97,7 @@ export default function InvoiceQuick80({
 
       <PaymentBlock sale={sale} paymentMethod={paymentMethod} />
       <TotalsBlock sale={sale} />
-
-      {sale.fiscal_notes && (
-        <p className="mt-5 break-words text-[13px]">
-          <strong>Notas:</strong> {sale.fiscal_notes}
-        </p>
-      )}
+      {sale.fiscal_notes && <p className="mt-5 break-words text-[13px]"><strong>Notas:</strong> {sale.fiscal_notes}</p>}
 
       <div className="mt-6 flex break-inside-avoid justify-center">
         <QRCodeSVG value={qrValue} size={145} level="M" />
@@ -158,3 +107,4 @@ export default function InvoiceQuick80({
     </section>
   )
 }
+

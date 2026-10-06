@@ -4,8 +4,10 @@ import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { ArrowLeft, ImageIcon, MessageCircle, Minus, Plus, ShoppingCart, ZoomIn } from 'lucide-react'
+import { supabase } from '@/lib/supabase'
 import { formatMoney } from '@/lib/format'
 import { getProductMainImage } from '@/lib/product-images'
+import { getPublicStoreBySlug } from '@/lib/store-context'
 import ProductCard from '@/components/web/ProductCard'
 import WebStoreLayout from '@/components/web/WebStoreLayout'
 import type { WebCategory, WebProduct, WebProductImage } from '@/components/web/types'
@@ -22,14 +24,6 @@ const specLabels: Record<string, string> = {
   os: 'OS',
   battery: 'Bateria',
   camera: 'Camara',
-}
-
-type StorefrontPayload = {
-  store: { id: string }
-  webSettings: Partial<WebSettings> | null
-  categories: WebCategory[]
-  products: WebProduct[]
-  productImages: WebProductImage[]
 }
 
 export default function WebProductDetailPage() {
@@ -51,51 +45,90 @@ export default function WebProductDetailPage() {
   const loadData = useCallback(async (currentSlug: string) => {
     setLoading(true)
     setError('')
-    const decodedSlug = decodeURIComponent(currentSlug)
-    try {
-      const response = await fetch('/api/public/storefront/shopdesk')
-      const payload: unknown = await response.json().catch(() => null)
-      if (!response.ok || !payload || typeof payload !== 'object') {
-        const message = payload && typeof payload === 'object' && 'error' in payload
-          ? String(payload.error)
-          : 'No se pudo cargar el producto.'
-        setError(message)
-        return
-      }
+    const store = await getPublicStoreBySlug('guatapo')
 
-      const storefront = payload as StorefrontPayload
-      const productData = storefront.products.find((item) => item.id === decodedSlug || item.slug === decodedSlug)
-      let nextSettings = readLocalWebSettings(storefront.store.id)
-      if (storefront.webSettings) {
-        nextSettings = normalizeWebSettings(storefront.webSettings)
-        saveLocalWebSettings(storefront.store.id, nextSettings)
-      }
-      setWebSettings(nextSettings)
-      setCategories(storefront.categories)
-      setProductImages(storefront.productImages)
-
-      if (!productData) {
-        setError('Producto no encontrado')
-        setProduct(null)
-        setRelatedProducts([])
-        return
-      }
-
-      const mainImage = getProductMainImage(productData.id, productData.image_url, storefront.productImages)
-      setProduct(productData)
-      setRelatedProducts(
-        storefront.products
-          .filter((item) => item.id !== productData.id && item.category === productData.category)
-          .slice(0, 4)
-      )
-      setSelectedImage(mainImage || '')
-      setCategory(productData.category || '')
-      setQuantity(1)
-    } catch (error) {
-      setError(error instanceof Error ? error.message : 'No se pudo cargar el producto.')
-    } finally {
+    if (!store) {
+      setError('Tienda no encontrada')
       setLoading(false)
+      return
     }
+
+    let nextSettings = readLocalWebSettings(store.id)
+    const settingsResult = await supabase.from('stores').select('web_settings').eq('id', store.id).maybeSingle()
+    if (!settingsResult.error && settingsResult.data?.web_settings) {
+      nextSettings = normalizeWebSettings(settingsResult.data.web_settings as Partial<WebSettings>)
+      saveLocalWebSettings(store.id, nextSettings)
+    }
+    setWebSettings(nextSettings)
+
+    const decodedSlug = decodeURIComponent(currentSlug)
+    const isUuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        decodedSlug
+      )
+
+    let productQuery = supabase
+      .from('products')
+      .select(
+        'id, name, sale_price, coop_price, web_visibility, stock, category, slug, image_url, short_description, full_description, specs, featured'
+      )
+      .eq('store_id', store.id)
+      .eq('active', true)
+      .eq('show_on_website', true)
+      .in('web_visibility', ['normal', 'both'])
+
+    productQuery = isUuid
+      ? productQuery.eq('id', decodedSlug)
+      : productQuery.eq('slug', decodedSlug)
+
+    const { data: productData, error: productError } = await productQuery.maybeSingle()
+
+    const { data: categoriesData } = await supabase
+      .from('categories')
+      .select('id, name')
+      .eq('store_id', store.id)
+      .eq('active', true)
+      .order('name')
+
+    const { data: imagesData } = await supabase
+      .from('product_images')
+      .select('id, product_id, image_url, is_primary, sort_order')
+      .eq('store_id', store.id)
+      .order('sort_order')
+
+    if (productError || !productData) {
+      setError(productError?.message || 'Producto no encontrado')
+      setProduct(null)
+      setRelatedProducts([])
+      setCategories(categoriesData || [])
+      setProductImages(imagesData || [])
+      setLoading(false)
+      return
+    }
+
+    const { data: relatedData } = await supabase
+      .from('products')
+      .select(
+        'id, name, sale_price, coop_price, web_visibility, stock, category, slug, image_url, short_description, full_description, specs, featured'
+      )
+      .eq('store_id', store.id)
+      .eq('active', true)
+      .eq('show_on_website', true)
+      .in('web_visibility', ['normal', 'both'])
+      .eq('category', productData.category || '')
+      .neq('id', productData.id)
+      .limit(4)
+
+    const mainImage = getProductMainImage(productData.id, productData.image_url, imagesData || [])
+
+    setProduct(productData)
+    setRelatedProducts(relatedData || [])
+    setCategories(categoriesData || [])
+    setProductImages(imagesData || [])
+    setSelectedImage(mainImage || '')
+    setCategory(productData.category || '')
+    setQuantity(1)
+    setLoading(false)
   }, [])
 
   useEffect(() => {
@@ -184,7 +217,6 @@ export default function WebProductDetailPage() {
           specs={specs}
           productImages={productImages}
           relatedProducts={relatedProducts}
-          whatsappNumber={webSettings.whatsapp}
           onSelectImage={setSelectedImage}
           onChangeQuantity={changeQuantity}
           onAdd={addCurrentProduct}
@@ -202,7 +234,6 @@ function ProductDetailContent({
   specs,
   productImages,
   relatedProducts,
-  whatsappNumber,
   onSelectImage,
   onChangeQuantity,
   onAdd,
@@ -214,7 +245,6 @@ function ProductDetailContent({
   specs: { key: string; label: string; value: string | null | undefined }[]
   productImages: WebProductImage[]
   relatedProducts: WebProduct[]
-  whatsappNumber: string
   onSelectImage: (image: string) => void
   onChangeQuantity: (amount: number) => void
   onAdd: () => void
@@ -321,7 +351,7 @@ function ProductDetailContent({
             </button>
             <button
               type="button"
-              onClick={() => openProductWhatsApp({ ...product, sale_price: effectivePrice }, quantity, whatsappNumber)}
+              onClick={() => openProductWhatsApp({ ...product, sale_price: effectivePrice }, quantity)}
               disabled={!availability.available}
               className="flex h-12 items-center justify-center gap-2 rounded-full bg-emerald-600 px-6 text-sm font-black text-white transition hover:-translate-y-0.5 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-300"
             >
@@ -361,7 +391,6 @@ function ProductDetailContent({
                   relatedProduct.image_url,
                   productImages
                 )}
-                whatsappNumber={whatsappNumber}
               />
             ))}
           </div>
@@ -370,3 +399,7 @@ function ProductDetailContent({
     </>
   )
 }
+
+
+
+

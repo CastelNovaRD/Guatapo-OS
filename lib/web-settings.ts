@@ -98,10 +98,10 @@ export const DEFAULT_WEB_SETTINGS: WebSettings = {
   showBenefits: true,
   showCategorySection: true,
   showFeaturedFirst: true,
-  logoUrl: '/logo/logo-castelnova-os.png',
-  contactEmail: '',
-  contactPhone: '',
-  contactAddress: '',
+  logoUrl: '/logo-guatapo-transparent.png',
+  contactEmail: 'Info@guatapo.com',
+  contactPhone: '809-636-1020',
+  contactAddress: 'Av. Duarte Vieja, Plaza Pony local 101. Santo Domingo.',
   businessDays: 'Lunes a sabado',
   openingTime: '9:00 AM',
   closingTime: '7:00 PM',
@@ -110,9 +110,9 @@ export const DEFAULT_WEB_SETTINGS: WebSettings = {
     saturday: { enabled: true, open: '9:00 AM', close: '3:00 PM' },
     sunday: { enabled: false, open: '9:00 AM', close: '3:00 PM' },
   },
-  footerDescription: 'Catalogo online de productos, ofertas y novedades de nuestra tienda.',
-  whatsapp: '',
-  instagram: '',
+  footerDescription: 'Catalogo online de tecnologia, accesorios y equipos disponibles en Guatapo.',
+  whatsapp: '18096361020',
+  instagram: '@guatapord',
   facebook: '',
   tiktok: '',
   youtube: '',
@@ -172,9 +172,9 @@ export const DEFAULT_WEB_SETTINGS: WebSettings = {
   textColor: '#09090b',
   buttonColor: '#009a44',
   priceColor: '#007f5f',
-  seoTitle: 'Tienda Online | Tecnologia y accesorios',
-  seoDescription: 'Catalogo online de tecnologia, celulares, accesorios y ofertas.',
-  seoKeywords: 'tecnologia, celulares, accesorios, tienda online',
+  seoTitle: 'Guatapo | Lo mejor en tecnologia',
+  seoDescription: 'Catalogo online de tecnologia, celulares, accesorios y ofertas de Guatapo.',
+  seoKeywords: 'tecnologia, celulares, accesorios, guatapo, tienda online',
   googleAnalyticsId: '',
   metaPixelId: '',
   customHeadCode: '',
@@ -261,7 +261,7 @@ export function getStoreOpenStatus(schedule: WebSchedule | null | undefined, dat
   const isOpen = open <= close ? now.minutes >= open && now.minutes <= close : now.minutes >= open || now.minutes <= close
   return { isOpen, label: isOpen ? 'Abierto ahora' : 'Cerrado ahora' }
 }
-const WEB_SETTINGS_PREFIX = 'shopdesk_web_settings_'
+const WEB_SETTINGS_PREFIX = 'guatapo_web_settings_'
 
 export function webSettingsKey(storeId = 'default') {
   return `${WEB_SETTINGS_PREFIX}${storeId}`
@@ -342,5 +342,14 @@ export function readLocalWebSettings(storeId = 'default') {
 export function saveLocalWebSettings(storeId: string, settings: WebSettings) {
   if (typeof window === 'undefined') return
   window.localStorage.setItem(webSettingsKey(storeId || 'default'), JSON.stringify(normalizeWebSettings(settings)))
-  window.dispatchEvent(new CustomEvent('shopdesk:web-settings-updated', { detail: settings }))
+  window.dispatchEvent(new CustomEvent('guatapo:web-settings-updated', { detail: settings }))
 }
+
+
+
+
+
+
+
+
+

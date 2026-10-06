@@ -1,6 +1,6 @@
-﻿-- ShopDesk OS - rendimiento de Inventario y POS
--- Ejecutar temporalmente en Supabase SQL Editor mientras ShopDesk OS siga en la fase previa a la migracion al VPS.
--- No elimina datos. Agrega configuracion, funciones RPC e indices seguros.
+﻿-- Guatapo OS - rendimiento de Inventario y POS
+-- Ejecutar en Supabase SQL Editor del proyecto de Guatapo.
+-- No elimina datos. Agrega configuración, una función RPC y índices seguros.
 
 alter table public.stores
   add column if not exists pos_featured_products_limit integer not null default 10;
@@ -127,7 +127,6 @@ as $$
   where ap.sort_order <= (select value from safe_limit)
   order by ap.sort_order;
 $$;
-
 create or replace function public.get_inventory_summary(p_store_id uuid)
 returns table (
   active_count bigint,
@@ -149,10 +148,19 @@ as $$
   from public.products p
   where p.store_id = p_store_id;
 $$;
+-- Limites de productos visibles en POS Cooperativa y Cotizaciones
+alter table public.stores
+  add column if not exists cooperative_pos_products_limit integer not null default 10;
 
--- Limite de productos visibles en Cotizaciones
 alter table public.stores
   add column if not exists quote_products_limit integer not null default 10;
+
+alter table public.stores
+  drop constraint if exists stores_cooperative_pos_products_limit_check;
+
+alter table public.stores
+  add constraint stores_cooperative_pos_products_limit_check
+  check (cooperative_pos_products_limit in (5, 10, 20, 50));
 
 alter table public.stores
   drop constraint if exists stores_quote_products_limit_check;

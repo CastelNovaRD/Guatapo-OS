@@ -2,8 +2,10 @@
 
 import { useEffect, useState } from 'react'
 import AppShell from '@/components/AppShell'
+import { supabase } from '@/lib/supabase'
 import { CalendarDays, Printer } from 'lucide-react'
 import { formatDate, formatTime, formatMoney } from '@/lib/format'
+import { getCurrentStoreId } from '@/lib/store-context'
 
 type CashRegister = {
   id: string
@@ -11,14 +13,10 @@ type CashRegister = {
   closed_at: string | null
   opening_amount: number
   closing_amount: number | null
-  opened_by_name: string | null
-  closed_by_name: string | null
-  totalSales?: number
-  cashSales?: number
-  cardSales?: number
-  transferSales?: number
-  expectedCash?: number
-  difference?: number | null
+  total_sales: number
+  total_card_fee: number
+  total_profit: number
+  difference: number
   status: string
 }
 
@@ -26,47 +24,38 @@ export default function CuadresPage() {
   const [registers, setRegisters] = useState<CashRegister[]>([])
   const [loading, setLoading] = useState(true)
 
+  useEffect(() => {
+    loadRegisters()
+  }, [])
+
   async function loadRegisters() {
     setLoading(true)
-    try {
-      const response = await fetch('/api/cash-registers')
-      const payload: unknown = await response.json().catch(() => null)
-      if (!response.ok) {
-        const message = payload && typeof payload === 'object' && 'error' in payload
-          ? String(payload.error)
-          : 'No se pudieron cargar los cuadres.'
-        alert('Error cargando cuadres: ' + message)
-        return
-      }
-      const list = Array.isArray(payload) ? payload as CashRegister[] : []
-      const hydrated = await Promise.all(
-        list.map(async (register) => {
-          const summaryResponse = await fetch(
-            `/api/cash-registers/${encodeURIComponent(register.id)}/history-summary`,
-            { cache: 'no-store' }
-          )
-          if (!summaryResponse.ok) return register
-          const summary = await summaryResponse.json().catch(() => null)
-          return summary && typeof summary === 'object' ? { ...register, ...summary } : register
-        })
-      )
-      setRegisters(hydrated)
-    } catch (error) {
-      alert('Error cargando cuadres: ' + (error instanceof Error ? error.message : 'Error desconocido'))
-    } finally {
-      setLoading(false)
-    }
-  }
+    const storeId = await getCurrentStoreId()
 
-  useEffect(() => {
-    void Promise.resolve().then(loadRegisters)
-  }, [])
+    if (!storeId) {
+      setLoading(false)
+      return alert('Este usuario no tiene una tienda asignada.')
+    }
+
+    const { data, error } = await supabase
+      .from('cash_registers')
+      .select('*')
+      .eq('store_id', storeId)
+      .order('opened_at', { ascending: false })
+
+    if (error) {
+      alert('Error cargando cuadres: ' + error.message)
+    }
+
+    setRegisters(data || [])
+    setLoading(false)
+  }
 
   return (
     <AppShell>
       <div className="mb-8">
         <h1 className="flex items-center gap-3 text-3xl font-bold">
-          <CalendarDays className="text-[#a90404]" />
+          <CalendarDays className="text-emerald-500" />
           Cuadres de caja
         </h1>
         <p className="text-zinc-500">
@@ -82,24 +71,21 @@ export default function CuadresPage() {
         {loading ? (
           <p className="p-5 text-zinc-500">Cargando cuadres...</p>
         ) : registers.length === 0 ? (
-          <p className="p-5 text-zinc-500">TodavÃ­a no hay cuadres registrados.</p>
+          <p className="p-5 text-zinc-500">Todavía no hay cuadres registrados.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead className="text-sm text-zinc-500">
                 <tr className="border-b border-zinc-200">
                   <th className="p-4">Fecha</th>
-                  <th className="p-4">Cajero</th>
-                  <th className="p-4">Efectivo inicial</th>
-                  <th className="p-4">Efectivo</th>
-                  <th className="p-4">Tarjeta</th>
-                  <th className="p-4">Transferencia</th>
-                  <th className="p-4">Total vendido</th>
+                  <th className="p-4">Apertura</th>
+                  <th className="p-4">Cierre</th>
                   <th className="p-4">Efectivo esperado</th>
-                  <th className="p-4">Efectivo contado</th>
+                  <th className="p-4">Ganancia</th>
+                  <th className="p-4">Comisión tarjeta</th>
                   <th className="p-4">Descuadre</th>
                   <th className="p-4">Estado</th>
-                  <th className="p-4 text-right">AcciÃ³n</th>
+                  <th className="p-4 text-right">Acción</th>
                 </tr>
               </thead>
 
@@ -116,16 +102,8 @@ export default function CuadresPage() {
                     </td>
 
                     <td className="p-4">
-                      <p>{register.opened_by_name || '-'}</p>
-                      {register.closed_by_name ? <p className="text-sm text-zinc-500">Cierre: {register.closed_by_name}</p> : null}
+                      {formatMoney(register.opening_amount)}
                     </td>
-
-                    <td className="p-4">{formatMoney(register.opening_amount)}</td>
-                    <td className="p-4">{formatOptionalMoney(register.cashSales)}</td>
-                    <td className="p-4">{formatOptionalMoney(register.cardSales)}</td>
-                    <td className="p-4">{formatOptionalMoney(register.transferSales)}</td>
-                    <td className="p-4 font-semibold">{formatOptionalMoney(register.totalSales)}</td>
-                    <td className="p-4 font-semibold text-emerald-600">{formatOptionalMoney(register.expectedCash)}</td>
 
                     <td className="p-4">
                       {register.closing_amount !== null
@@ -133,17 +111,29 @@ export default function CuadresPage() {
                         : '-'}
                     </td>
 
+                    <td className="p-4 font-semibold text-emerald-600">
+                      {formatMoney(register.total_sales)}
+                    </td>
+
+                    <td className="p-4">
+                      {formatMoney(register.total_profit)}
+                    </td>
+
+                    <td className="p-4 text-red-500">
+                      {formatMoney(register.total_card_fee)}
+                    </td>
+
                     <td className="p-4">
                       <span
                         className={
-                          Number(register.difference ?? 0) < 0
+                          Number(register.difference || 0) < 0
                             ? 'font-semibold text-red-500'
-                            : Number(register.difference ?? 0) > 0
+                            : Number(register.difference || 0) > 0
                               ? 'font-semibold text-orange-500'
                               : 'font-semibold text-emerald-600'
                         }
                       >
-                        {formatOptionalMoney(register.difference)}
+                        {formatMoney(register.difference)}
                       </span>
                     </td>
 
@@ -178,8 +168,3 @@ export default function CuadresPage() {
     </AppShell>
   )
 }
-
-function formatOptionalMoney(value: number | null | undefined) {
-  return value === undefined || value === null ? '-' : formatMoney(value)
-}
-

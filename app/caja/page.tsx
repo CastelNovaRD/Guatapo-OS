@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import AppShell from '@/components/AppShell'
+import { supabase } from '@/lib/supabase'
+import { getCurrentStoreId } from '@/lib/store-context'
 
 type CashRegister = {
   id: string
@@ -14,6 +16,7 @@ type CashRegister = {
 
 export default function CajaPage() {
   const [openCash, setOpenCash] = useState<CashRegister | null>(null)
+  const [storeId, setStoreId] = useState<string | null>(null)
   const [openingAmount, setOpeningAmount] = useState('')
   const [closingAmount, setClosingAmount] = useState('')
   const [loading, setLoading] = useState(true)
@@ -24,62 +27,92 @@ export default function CajaPage() {
 
   async function loadCash() {
     setLoading(true)
-    try {
-      const response = await fetch('/api/cash-registers?status=open')
-      const payload: unknown = await response.json().catch(() => null)
-      if (!response.ok) {
-        const message = payload && typeof payload === 'object' && 'error' in payload
-          ? String(payload.error)
-          : 'No se pudo cargar la caja.'
-        alert(message)
-        return
-      }
-      setOpenCash(Array.isArray(payload) ? (payload[0] as CashRegister | undefined) || null : null)
-    } catch (error) {
-      alert(error instanceof Error ? error.message : 'No se pudo cargar la caja.')
-    } finally {
+    const currentStoreId = await getCurrentStoreId()
+    setStoreId(currentStoreId)
+
+    if (!currentStoreId) {
       setLoading(false)
+      return alert('Este usuario no tiene una tienda asignada.')
     }
+
+    const { data } = await supabase
+      .from('cash_registers')
+      .select('*')
+      .eq('store_id', currentStoreId)
+      .eq('status', 'open')
+      .order('opened_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    setOpenCash(data || null)
+    setLoading(false)
   }
 
   async function openRegister() {
-    const response = await fetch('/api/cash-registers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ openingAmount: Number(openingAmount || 0) }),
+    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
+
+    const { error } = await supabase.from('cash_registers').insert({
+      store_id: storeId,
+      opening_amount: Number(openingAmount || 0),
+      status: 'open',
     })
-    const payload: unknown = await response.json().catch(() => null)
-    if (!response.ok) {
-      const message = payload && typeof payload === 'object' && 'error' in payload
-        ? String(payload.error)
-        : 'No se pudo abrir la caja.'
-      return alert(message)
-    }
+
+    if (error) return alert(error.message)
 
     setOpeningAmount('')
-    window.dispatchEvent(new Event('shopdesk:cash-updated'))
+    window.dispatchEvent(new Event('guatapo:cash-updated'))
     loadCash()
   }
 
   async function closeRegister() {
     if (!openCash) return
+
+    const { data: sales } = await supabase
+      .from('sales')
+      .select('total, card_fee, cash_received, cash_change, net_received, sale_items(cost, quantity, total)')
+      .eq('store_id', storeId)
+      .eq('cash_register_id', openCash.id)
+
+    const businessSales = sales?.reduce(
+      (sum, sale) => sum + Math.max(0, Number(sale.total || 0) - Number(sale.card_fee || 0)),
+      0
+    ) || 0
+    const totalSales = Number(openCash.opening_amount || 0) + businessSales
+    const totalCardFee = sales?.reduce((sum, sale) => sum + Number(sale.card_fee || 0), 0) || 0
+
+    const grossProfit =
+      sales?.reduce((sum, sale: any) => {
+        const itemsProfit =
+          sale.sale_items?.reduce((iSum: number, item: any) => {
+            return iSum + (Number(item.total || 0) - Number(item.cost || 0) * Number(item.quantity || 1))
+          }, 0) || 0
+
+        return sum + itemsProfit
+      }, 0) || 0
+    const profit = Math.max(0, grossProfit - totalCardFee)
+
     const counted = Number(closingAmount || 0)
-    const response = await fetch(`/api/cash-registers/${encodeURIComponent(openCash.id)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ closingAmount: counted }),
-    })
-    const payload: unknown = await response.json().catch(() => null)
-    if (!response.ok) {
-      const message = payload && typeof payload === 'object' && 'error' in payload
-        ? String(payload.error)
-        : 'No se pudo cerrar la caja.'
-      return alert(message)
-    }
+    const difference = counted - totalSales
+
+    const { error } = await supabase
+      .from('cash_registers')
+      .update({
+        closing_amount: counted,
+        total_sales: totalSales,
+        total_card_fee: totalCardFee,
+        total_profit: profit,
+        difference,
+        status: 'closed',
+        closed_at: new Date().toISOString(),
+      })
+      .eq('store_id', storeId)
+      .eq('id', openCash.id)
+
+    if (error) return alert(error.message)
 
     alert('Caja cerrada correctamente')
     setClosingAmount('')
-    window.dispatchEvent(new Event('shopdesk:cash-updated'))
+    window.dispatchEvent(new Event('guatapo:cash-updated'))
     loadCash()
   }
 

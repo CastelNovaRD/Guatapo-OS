@@ -1,18 +1,6 @@
 import { QRCodeSVG } from 'qrcode.react'
 import InvoiceWarranty from './InvoiceWarranty'
-import {
-  formatPercent,
-  Invoice80Customer,
-  Invoice80FiscalCustomer,
-  Invoice80Item,
-  Invoice80PaymentMethod,
-  Invoice80Sale,
-  paymentMethodLabel,
-  receiptDate,
-  receiptMoney,
-  receiptQrValue,
-  taxPercentFromSale,
-} from './invoice80-helpers'
+import { formatPercent, Invoice80Customer, Invoice80FiscalCustomer, Invoice80Item, Invoice80PaymentMethod, Invoice80Sale, paymentMethodLabel, receiptDate, receiptMoney, receiptQrValue, taxPercentFromSale } from './invoice80-helpers'
 
 type Props = {
   sale: Invoice80Sale
@@ -30,25 +18,17 @@ function DashedLine() {
 function ReceiptHeader() {
   return (
     <header className="text-center">
-      <img
-        src="/logo/logo-castelnova-os.png"
-        alt="CastelNova OS"
-        className="mx-auto h-auto w-full max-w-[74mm] object-contain grayscale"
-      />
+      <img src="/logo-guatapo-transparent.png" alt="Guatapo" className="mx-auto h-auto w-full max-w-[74mm] object-contain grayscale" />
       <div className="mt-1 text-[19px] leading-tight">
-        <p>ShopDesk OS</p>
+        <p>Guatapo SRL</p>
+        <p>RNC: 131974661</p>
+        <p>809-636-1020</p>
       </div>
     </header>
   )
 }
 
-function PaymentBlock({
-  sale,
-  paymentMethod,
-}: {
-  sale: Invoice80Sale
-  paymentMethod: Invoice80PaymentMethod | null
-}) {
+function PaymentBlock({ sale, paymentMethod }: { sale: Invoice80Sale; paymentMethod: Invoice80PaymentMethod | null }) {
   const method = paymentMethodLabel(sale, paymentMethod)
   const isCash = method.includes('EFECTIVO')
 
@@ -56,7 +36,6 @@ function PaymentBlock({
     <div className="mt-7 grid grid-cols-[1fr_1fr] gap-x-5 text-[15px] font-bold uppercase leading-tight">
       <span className="text-right">MET. PAGO</span>
       <span>{method}</span>
-
       {isCash && (
         <>
           <span className="text-right">RECIBIDO</span>
@@ -71,24 +50,20 @@ function PaymentBlock({
 
 function FiscalTotals({ sale }: { sale: Invoice80Sale }) {
   const taxPercent = taxPercentFromSale(sale)
-
   return (
     <div className="mt-8 space-y-2 text-[17px] font-bold uppercase">
       <div className="grid grid-cols-[112px_1fr] items-center gap-x-3">
         <span>Subtotal</span>
         <span className="text-right">{receiptMoney(sale.subtotal)}</span>
       </div>
-
       <div className="grid grid-cols-[112px_1fr] items-center gap-x-3">
         <span>ITBIS ({formatPercent(taxPercent)}%)</span>
         <span className="text-right">{receiptMoney(sale.itbis)}</span>
       </div>
-
       <div className="grid grid-cols-[112px_1fr] items-center gap-x-3">
         <span>Descuento</span>
         <span className="text-right">{receiptMoney(sale.discount)}</span>
       </div>
-
       <div className="mt-4 flex items-end justify-center gap-2 text-[22px] font-black leading-none">
         <span>Total</span>
         <span>{receiptMoney(sale.total)}</span>
@@ -97,27 +72,12 @@ function FiscalTotals({ sale }: { sale: Invoice80Sale }) {
   )
 }
 
-export default function InvoiceFiscal80({
-  sale,
-  items,
-  customer,
-  fallbackCustomer,
-  paymentMethod,
-  ncfValidUntil,
-}: Props) {
+export default function InvoiceFiscal80({ sale, items, customer, fallbackCustomer, paymentMethod, ncfValidUntil }: Props) {
   const qrValue = receiptQrValue(sale, items)
   const taxTotal = Number(sale.itbis || 0)
   const itemBaseTotal = items.reduce((sum, item) => sum + Number(item.total || 0), 0)
-  const fiscalName =
-    sale.fiscal_customer_name ||
-    customer?.company_name ||
-    fallbackCustomer?.full_name ||
-    '-'
-  const fiscalRnc =
-    sale.fiscal_customer_rnc ||
-    customer?.rnc ||
-    fallbackCustomer?.cedula ||
-    '-'
+  const fiscalName = sale.fiscal_customer_name || customer?.company_name || fallbackCustomer?.full_name || '-'
+  const fiscalRnc = sale.fiscal_customer_rnc || customer?.rnc || fallbackCustomer?.cedula || '-'
 
   return (
     <section className="receipt mx-auto w-[80mm] bg-white px-[5mm] py-[5mm] text-black shadow-xl print:shadow-none">
@@ -134,21 +94,14 @@ export default function InvoiceFiscal80({
         <p>Valido hasta: {ncfValidUntil ? receiptDate(ncfValidUntil) : '-'}</p>
         <p>RNC: {fiscalRnc}</p>
         <p className="text-[14px] leading-tight">Cliente: {fiscalName}</p>
-
         <div className="relative uppercase">
-          <p className="text-center whitespace-nowrap">
-            {sale.invoice_number || `FAC-${sale.id.slice(0, 7)}`}
-          </p>
-          <span className="absolute right-0 top-0 text-right text-[13px]">
-            {paymentMethodLabel(sale, paymentMethod)}
-          </span>
+          <p className="text-center whitespace-nowrap">{sale.invoice_number || `FAC-${sale.id.slice(0, 7)}`}</p>
+          <span className="absolute right-0 top-0 text-right text-[13px]">{paymentMethodLabel(sale, paymentMethod)}</span>
         </div>
       </div>
 
       <DashedLine />
-      <p className="text-center text-[12px] font-bold uppercase">
-        Factura de credito fiscal electronico
-      </p>
+      <p className="text-center text-[12px] font-bold uppercase">Factura de credito fiscal electronico</p>
       <DashedLine />
 
       <div className="grid grid-cols-[94px_24px_68px_74px] text-center text-[11px] font-bold uppercase">
@@ -157,27 +110,15 @@ export default function InvoiceFiscal80({
         <span>Itbis</span>
         <span>Valor</span>
       </div>
-
       <DashedLine />
 
       <div className="space-y-7 py-5 text-[11px] font-bold">
         {items.map((item, index) => {
           const ratio = itemBaseTotal > 0 ? Number(item.total || 0) / itemBaseTotal : 0
           const itemTax = taxTotal * ratio
-
           return (
-            <div
-              key={`${item.product_name}-${index}`}
-              className="grid break-inside-avoid grid-cols-[94px_24px_68px_74px] items-start gap-x-1"
-            >
-              <span className="break-words uppercase leading-tight">
-                {item.product_name}
-                {item.imei && (
-                  <span className="mt-1 block text-[10px] normal-case">
-                    IMEI: {item.imei}
-                  </span>
-                )}
-              </span>
+            <div key={`${item.product_name}-${index}`} className="grid break-inside-avoid grid-cols-[94px_24px_68px_74px] items-start gap-x-1">
+              <span className="break-words uppercase leading-tight">{item.product_name}{item.imei && <span className="mt-1 block text-[10px] normal-case">IMEI: {item.imei}</span>}</span>
               <span className="text-center">{item.quantity}</span>
               <span className="text-right">{receiptMoney(itemTax)}</span>
               <span className="text-right">{receiptMoney(item.total)}</span>
@@ -188,12 +129,7 @@ export default function InvoiceFiscal80({
 
       <PaymentBlock sale={sale} paymentMethod={paymentMethod} />
       <FiscalTotals sale={sale} />
-
-      {sale.fiscal_notes && (
-        <p className="mt-5 break-words text-[12px]">
-          <strong>Notas:</strong> {sale.fiscal_notes}
-        </p>
-      )}
+      {sale.fiscal_notes && <p className="mt-5 break-words text-[12px]"><strong>Notas:</strong> {sale.fiscal_notes}</p>}
 
       <div className="mt-6 flex break-inside-avoid justify-center">
         <QRCodeSVG value={qrValue} size={145} level="M" />
@@ -203,3 +139,6 @@ export default function InvoiceFiscal80({
     </section>
   )
 }
+
+
+

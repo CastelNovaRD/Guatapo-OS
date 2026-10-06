@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
+import { supabase } from '@/lib/supabase'
 import { formatDateTime } from '@/lib/format'
 import { getCurrentStoreId } from '@/lib/store-context'
 import { CalendarDays, RefreshCw, Search, ShieldCheck } from 'lucide-react'
@@ -63,29 +64,26 @@ export default function AuditPage() {
       return
     }
 
-     try {
-      const response = await fetch('/api/audit', {
-        cache: 'no-store',
-      })
+    const { data, error: loadError } = await supabase
+      .from('audit_logs')
+      .select('id, created_at, user_name, user_email, module, action, entity_type, entity_id, summary, metadata')
+      .eq('store_id', storeId)
+      .order('created_at', { ascending: false })
+      .limit(250)
 
-      const data = await response.json().catch(() => null)
-
-      if (!response.ok) {
-        setLogs([])
-        setError(
-          data?.error || 'No se pudo cargar la auditoría.'
-        )
-        return
-      }
-
-      setLogs(Array.isArray(data) ? (data as AuditLog[]) : [])
-    } catch (error) {
-      console.error('Error cargando auditoría:', error)
+    if (loadError) {
       setLogs([])
-      setError('No se pudo cargar la auditoría.')
-    } finally {
+      setError(
+        loadError.code === '42P01'
+          ? 'La tabla de auditoría todavía no existe. Ejecuta outputs/supabase-auditoria-permisos.sql en Supabase.'
+          : loadError.message
+      )
       setLoading(false)
+      return
     }
+
+    setLogs((data || []) as AuditLog[])
+    setLoading(false)
   }, [])
 
   useEffect(() => {

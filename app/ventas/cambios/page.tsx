@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import AppShell from '@/components/AppShell'
+import { supabase } from '@/lib/supabase'
 import { formatMoney, formatDate, formatTime } from '@/lib/format'
 import { getCurrentStoreId } from '@/lib/store-context'
 import {
@@ -111,126 +112,103 @@ export default function CambiosPage() {
   }, [storeId])
 
   async function loadCatalog() {
-  const currentStoreId = await getCurrentStoreId()
-  setStoreId(currentStoreId)
+    const currentStoreId = await getCurrentStoreId()
+    setStoreId(currentStoreId)
 
-  if (!currentStoreId) {
-    return alert('Este usuario no tiene una tienda asignada.')
-  }
+    if (!currentStoreId) {
+      return alert('Este usuario no tiene una tienda asignada.')
+    }
 
-  try {
-    const [productsResponse, methodsResponse] = await Promise.all([
-      fetch('/api/products', {
-        cache: 'no-store',
-      }),
-      fetch('/api/payment-methods', {
-        cache: 'no-store',
-      }),
-    ])
+    const { data: productsData } = await supabase
+      .from('products')
+      .select('id, name, sku, barcode, sale_price, cost, stock, product_type')
+      .eq('store_id', currentStoreId)
+      .eq('active', true)
+      .order('name')
 
-    const productsData = productsResponse.ok
-      ? await productsResponse.json()
-      : []
+    const { data: methodsData, error: methodsError } = await supabase
+      .from('payment_methods')
+      .select('id, name, fee_percent')
+      .eq('active', true)
+      .order('fee_percent')
 
-    const methodsData = methodsResponse.ok
-      ? await methodsResponse.json()
-      : []
+    const nextPaymentMethods =
+      methodsError || !methodsData?.length ? FALLBACK_PAYMENT_METHODS : methodsData
 
-    const nextProducts: Product[] = Array.isArray(productsData)
-      ? productsData
-      : Array.isArray(productsData?.products)
-        ? productsData.products
-        : []
-
-    const nextPaymentMethods: PaymentMethod[] =
-      Array.isArray(methodsData) && methodsData.length
-        ? methodsData
-        : FALLBACK_PAYMENT_METHODS
-
-    setProducts(nextProducts)
+    setProducts(productsData || [])
     setPaymentMethods(nextPaymentMethods)
+    if (nextPaymentMethods.length) setPaymentMethodId(nextPaymentMethods[0].id)
+  }
 
-    if (nextPaymentMethods.length) {
-      setPaymentMethodId((current) =>
-        current || nextPaymentMethods[0].id
+  async function searchInvoice(invoiceOverride?: string) {
+    const query = (invoiceOverride || invoiceSearch).trim()
+    if (!query) return alert('Escribe el numero de factura')
+    if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
+
+    setLoading(true)
+    setSale(null)
+    setSaleItems([])
+    setReturnRestockQuantities({})
+    setReturnDamagedQuantities({})
+    setExchangeReason('')
+    setExchangeReasonOther('')
+    setExchangeNotes('')
+    setReplacements([])
+    setLastPrintId(null)
+
+    let saleData: Sale | null = null
+    let saleError: { message: string } | null = null
+
+    const byInvoice = await supabase
+      .from('sales')
+      .select(
+        'id, invoice_number, subtotal, discount, itbis, total, card_fee, net_received, cash_received, cash_change, payment_method_id, ncf, fiscal_status, created_at'
       )
-    }
-  } catch (error) {
-    console.error('Error cargando catalogo de cambios:', error)
-    alert('No se pudo cargar el catalogo.')
-  }
-}
+      .eq('store_id', storeId)
+      .eq('invoice_number', query)
+      .maybeSingle()
 
- async function searchInvoice(invoiceOverride?: string) {
-  const query = (invoiceOverride || invoiceSearch).trim()
+    saleData = byInvoice.data || null
+    saleError = byInvoice.error
 
-  if (!query) {
-    return alert('Escribe el numero de factura')
-  }
+    if (!saleData && isUuid(query)) {
+      const byId = await supabase
+        .from('sales')
+        .select(
+          'id, invoice_number, subtotal, discount, itbis, total, card_fee, net_received, cash_received, cash_change, payment_method_id, ncf, fiscal_status, created_at'
+        )
+        .eq('store_id', storeId)
+        .eq('id', query)
+        .maybeSingle()
 
-  if (!storeId) {
-    return alert('Este usuario no tiene una tienda asignada.')
-  }
-
-  setLoading(true)
-  setSale(null)
-  setSaleItems([])
-  setReturnRestockQuantities({})
-  setReturnDamagedQuantities({})
-  setExchangeReason('')
-  setExchangeReasonOther('')
-  setExchangeNotes('')
-  setReplacements([])
-  setLastPrintId(null)
-
-  try {
-    const params = new URLSearchParams()
-
-    if (isUuid(query)) {
-      params.set('saleId', query)
-    } else {
-      params.set('invoiceNumber', query)
+      saleData = byId.data || null
+      saleError = byId.error
     }
 
-    const response = await fetch(`/api/sales?${params.toString()}`, {
-      cache: 'no-store',
-    })
-
-    const data = await response.json().catch(() => null)
-
-    if (response.status === 404) {
-      return alert('No encontre esa factura')
+    if (saleError) {
+      setLoading(false)
+      return alert('Error buscando factura: ' + saleError.message)
     }
-
-    if (!response.ok) {
-      return alert(
-        'Error buscando factura: ' +
-          (data?.error || 'No se pudo consultar la factura.')
-      )
-    }
-
-    const saleData = data?.sale as Sale | undefined
-    const itemsData = Array.isArray(data?.items)
-      ? (data.items as SaleItem[])
-      : []
 
     if (!saleData) {
+      setLoading(false)
       return alert('No encontre esa factura')
     }
 
-    setSale(saleData)
-    setSaleItems(itemsData)
+    const { data: itemsData, error: itemsError } = await supabase
+      .from('sale_items')
+      .select('id, sale_id, product_id, product_name, quantity, unit_price, cost, discount, total, imei')
+      .eq('store_id', storeId)
+      .eq('sale_id', saleData.id)
 
-    if (saleData.payment_method_id) {
-      setPaymentMethodId(saleData.payment_method_id)
-    }
-  } catch (error) {
-    console.error('Error buscando factura para cambio:', error)
-    alert('No se pudo consultar la factura.')
-  } finally {
     setLoading(false)
+
+    if (itemsError) return alert('Error cargando productos: ' + itemsError.message)
+
+    setSale(saleData)
+    setPaymentMethodId(saleData.payment_method_id || paymentMethodId)
+    setSaleItems(itemsData || [])
   }
-}
 
   const filteredProducts = useMemo(() => {
     const q = productSearch.toLowerCase().trim()
@@ -374,82 +352,230 @@ export default function CambiosPage() {
 
     setSaving(true)
 
-try {
-  const response = await fetch('/api/product-exchanges', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      saleId: sale.id,
-
+    let exchangeId: string | null = null
+    const exchangePayload = {
+      store_id: storeId,
+      sale_id: sale.id,
       reason: exchangeReason || 'Cambio de producto',
-      reasonOther:
-        exchangeReason === 'Otro'
-          ? exchangeReasonOther.trim() || null
-          : null,
+      reason_other: exchangeReasonOther.trim() || null,
       notes: exchangeNotes.trim() || null,
+      returned_total: returnedTotal,
+      replacement_total: replacementTotal,
+      difference: difference,
+      difference_total: difference,
+      exchange_type: difference > 0 ? 'customer_pays' : difference < 0 ? 'credit_balance' : 'even_exchange',
+      payment_status: difference > 0 ? 'paid' : 'not_required',
+      payment_method_id: difference > 0 && !paymentMethodId.startsWith('virtual:')
+        ? paymentMethodId
+        : null,
+      status: 'completed',
+    }
 
-      returnedItems: returnedItems.map((item) => ({
-        saleItemId: item.id,
-        restockQuantity: Number(
-          returnRestockQuantities[item.id] || 0
-        ),
-        damagedQuantity: Number(
-          returnDamagedQuantities[item.id] || 0
-        ),
-      })),
+    let exchangeResult = await supabase
+      .from('product_exchanges')
+      .insert(exchangePayload)
+      .select('id')
+      .maybeSingle()
 
-      replacements: replacements.map((item) => ({
-        productId: item.id,
-        quantity: Number(item.quantity),
-        discount: Number(item.discount || 0),
-        imei: item.imei.trim() || null,
-      })),
+    if (exchangeResult.error && exchangeResult.error.message.includes('difference_total')) {
+      const { difference_total, exchange_type, payment_status, ...legacyPayload } = exchangePayload
+      exchangeResult = await supabase
+        .from('product_exchanges')
+        .insert(legacyPayload)
+        .select('id')
+        .maybeSingle()
+    }
 
-      paymentMethodId:
-        difference > 0
-          ? paymentMethodId || null
-          : null,
+    if (exchangeResult.error) return finishWithError(exchangeResult.error.message)
 
-      cashReceived:
-        difference > 0 && isCashPayment
-          ? Number(cashReceived || 0)
-          : 0,
+    exchangeId = exchangeResult.data?.id || null
 
-      extraCardFee:
-        difference > 0
-          ? Number(extraCardFee || 0)
-          : 0,
-    }),
-  })
+    for (const item of returnedItems) {
+      const restockQty = Number(returnRestockQuantities[item.id] || 0)
+      const damagedQty = Number(returnDamagedQuantities[item.id] || 0)
+      const returnedQty = restockQty + damagedQty
+      const remainingQty = item.quantity - returnedQty
+      const discountPerUnit = Number(item.discount || 0) / Math.max(1, item.quantity)
+      const nextDiscount = discountPerUnit * remainingQty
+      const nextTotal = Math.max(0, Number(item.unit_price || 0) * remainingQty - nextDiscount)
 
-  const data = await response.json().catch(() => null)
 
-  if (!response.ok) {
-    return finishWithError(
-      data?.error || 'No se pudo completar el cambio.'
-    )
-  }
+      if (item.product_id && restockQty > 0) {
+        const product = products.find((p) => p.id === item.product_id)
+        const previousStock = Number(product?.stock || 0)
+        const { error } = await supabase
+          .from('products')
+          .update({ stock: previousStock + restockQty })
+          .eq('store_id', storeId)
+          .eq('id', item.product_id)
 
-  alert('Cambio aplicado correctamente')
+        if (error) return finishWithError(error.message)
 
-  await loadCatalog()
-  await searchInvoice()
+        const { error: movementError } = await supabase.from('inventory_movements').insert({
+          store_id: storeId,
+          product_id: item.product_id,
+          movement_type: 'exchange_return_restock',
+          reference_type: 'exchange',
+          quantity: restockQty,
+          previous_stock: previousStock,
+          new_stock: previousStock + restockQty,
+          sale_id: sale.id,
+          exchange_id: exchangeId,
+          reason: exchangeReason,
+        })
+        if (movementError) return finishWithError(movementError.message)
+      }
 
-  setLastPrintId(sale.id)
-} catch (error) {
-  console.error('Error aplicando cambio:', error)
+      if (item.product_id && damagedQty > 0) {
+        const product = products.find((p) => p.id === item.product_id)
+        const damagedPayload = {
+          store_id: storeId,
+          product_id: item.product_id,
+          sale_id: sale.id,
+          exchange_id: exchangeId,
+          sale_item_id: item.id,
+          imei: item.imei || null,
+          quantity: damagedQty,
+          reason: exchangeReason,
+          reason_other: exchangeReasonOther.trim() || null,
+          notes: exchangeNotes.trim() || null,
+          original_stock: Number(product?.stock || 0),
+          status: 'pending_review',
+        }
 
-  return finishWithError(
-    error instanceof Error
-      ? error.message
-      : 'No se pudo completar el cambio.'
-  )
-  } finally {
+        let damagedResult = await supabase.from('damaged_inventory').insert(damagedPayload)
+
+        if (damagedResult.error && (damagedResult.error.message.includes('original_stock') || damagedResult.error.message.includes('sale_item_id') || damagedResult.error.message.includes('reason_other'))) {
+          const { original_stock, sale_item_id, reason_other, ...legacyDamagedPayload } = damagedPayload
+          damagedResult = await supabase.from('damaged_inventory').insert(legacyDamagedPayload)
+        }
+
+        if (damagedResult.error) return finishWithError(damagedResult.error.message)
+
+        const { error: damagedMovementError } = await supabase.from('inventory_movements').insert({
+          store_id: storeId,
+          product_id: item.product_id,
+          movement_type: 'exchange_return_damaged',
+          reference_type: 'exchange',
+          quantity: damagedQty,
+          previous_stock: Number(product?.stock || 0),
+          new_stock: Number(product?.stock || 0),
+          sale_id: sale.id,
+          exchange_id: exchangeId,
+          reason: exchangeReason,
+        })
+        if (damagedMovementError) return finishWithError(damagedMovementError.message)
+      }
+
+      // La factura se modifica al final de cada producto devuelto. Si falla inventario o danado,
+      // conservamos intactos los productos comprados para que el cambio pueda reintentarse.
+
+      if (remainingQty <= 0) {
+        const { error } = await supabase.from('sale_items').delete().eq('store_id', storeId).eq('id', item.id)
+        if (error) return finishWithError(error.message)
+      } else {
+        const { error } = await supabase
+          .from('sale_items')
+          .update({
+            quantity: remainingQty,
+            discount: nextDiscount,
+            total: nextTotal,
+          })
+          .eq('store_id', storeId)
+          .eq('id', item.id)
+
+        if (error) return finishWithError(error.message)
+      }
+    }
+
+    if (replacements.length > 0) {
+      const newSaleItems = replacements.map((item) => ({
+        sale_id: sale.id,
+        store_id: storeId,
+        product_id: item.id,
+        product_name: item.name,
+        quantity: item.quantity,
+        unit_price: item.sale_price,
+        cost: item.cost,
+        discount: item.discount,
+        total: Math.max(0, Number(item.sale_price || 0) * item.quantity - Number(item.discount || 0)),
+        imei: item.imei || null,
+      }))
+
+      const { error } = await supabase.from('sale_items').insert(newSaleItems)
+      if (error) return finishWithError(error.message)
+
+      for (const item of replacements) {
+        const { error: stockError } = await supabase
+          .from('products')
+          .update({ stock: item.stock - item.quantity })
+          .eq('store_id', storeId)
+          .eq('id', item.id)
+
+        if (stockError) return finishWithError(stockError.message)
+
+        const { error: outgoingMovementError } = await supabase.from('inventory_movements').insert({
+          store_id: storeId,
+          product_id: item.id,
+          movement_type: 'exchange_product_out',
+          reference_type: 'exchange',
+          quantity: item.quantity,
+          previous_stock: item.stock,
+          new_stock: item.stock - item.quantity,
+          sale_id: sale.id,
+          exchange_id: exchangeId,
+          reason: exchangeReason || 'Cambio de producto',
+        })
+        if (outgoingMovementError) return finishWithError(outgoingMovementError.message)
+      }
+    }
+
+    const { data: updatedItems, error: updatedItemsError } = await supabase
+      .from('sale_items')
+      .select('quantity, unit_price, discount, total')
+      .eq('store_id', storeId)
+      .eq('sale_id', sale.id)
+
+    if (updatedItemsError) return finishWithError(updatedItemsError.message)
+
+    const nextSubtotal =
+      updatedItems?.reduce((sum, item) => sum + Number(item.unit_price || 0) * Number(item.quantity || 0), 0) || 0
+    const nextDiscount =
+      updatedItems?.reduce((sum, item) => sum + Number(item.discount || 0), 0) || 0
+    const nextTotal = updatedItems?.reduce((sum, item) => sum + Number(item.total || 0), 0) || 0
+    const nextCardFee = Number(sale.card_fee || 0) + extraCardFee
+
+    const { error: saleError } = await supabase
+      .from('sales')
+      .update({
+        subtotal: nextSubtotal,
+        discount: nextDiscount,
+        total: nextTotal,
+        card_fee: nextCardFee,
+        net_received: nextTotal - nextCardFee,
+        payment_method_id: difference > 0
+          ? paymentMethodId.startsWith('virtual:')
+            ? null
+            : paymentMethodId || sale.payment_method_id
+          : sale.payment_method_id,
+        cash_received: Number(sale.cash_received || 0) + (difference > 0 && isCashPayment ? Number(cashReceived || 0) : 0),
+        cash_change: Number(sale.cash_change || 0) + (difference > 0 && isCashPayment ? Math.max(0, cashChange) : 0),
+        notes: `Factura editada por cambio de articulos el ${new Date().toLocaleString('es-DO')}. Motivo: ${
+          exchangeReason === 'Otro' ? exchangeReasonOther.trim() : exchangeReason || 'Cambio de producto'
+        }`,
+      })
+      .eq('store_id', storeId)
+      .eq('id', sale.id)
+
+    if (saleError) return finishWithError(saleError.message)
+
+    alert('Cambio aplicado correctamente')
+    await loadCatalog()
+    await searchInvoice()
     setSaving(false)
+    setLastPrintId(sale.id)
   }
-}
+
   function finishWithError(message: string) {
     setSaving(false)
     alert('No pude guardar el cambio: ' + message)

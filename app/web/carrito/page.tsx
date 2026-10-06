@@ -3,7 +3,9 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ImageIcon, MessageCircle, Minus, Plus, ShoppingCart, Trash2 } from 'lucide-react'
+import { supabase } from '@/lib/supabase'
 import { formatMoney } from '@/lib/format'
+import { getPublicStoreBySlug } from '@/lib/store-context'
 import WebStoreLayout from '@/components/web/WebStoreLayout'
 import type { WebCartItem, WebCategory } from '@/components/web/types'
 import { openCartWhatsApp, productAvailability, readCart, saveCart } from '@/components/web/cart'
@@ -18,39 +20,26 @@ export default function WebCartPage() {
   const [webSettings, setWebSettings] = useState<WebSettings>(DEFAULT_WEB_SETTINGS)
 
   const loadCategories = useCallback(async () => {
-  try {
-    const response = await fetch('/api/public/storefront/shopdesk', {
-      cache: 'no-store',
-    })
+    const store = await getPublicStoreBySlug('guatapo')
+    if (!store) return
 
-    if (!response.ok) {
-      console.error('[WebCart] No pude cargar la tienda:', response.status)
-      return
+    let nextSettings = readLocalWebSettings(store.id)
+    const settingsResult = await supabase.from('stores').select('web_settings').eq('id', store.id).maybeSingle()
+    if (!settingsResult.error && settingsResult.data?.web_settings) {
+      nextSettings = normalizeWebSettings(settingsResult.data.web_settings as Partial<WebSettings>)
+      saveLocalWebSettings(store.id, nextSettings)
     }
-
-    const data = await response.json()
-
-    if (!data?.store?.id) return
-
-    let nextSettings = readLocalWebSettings(data.store.id)
-
-    if (data.webSettings) {
-      nextSettings = normalizeWebSettings(
-        data.webSettings as Partial<WebSettings>
-      )
-      saveLocalWebSettings(data.store.id, nextSettings)
-    }
-
     setWebSettings(nextSettings)
-    setCategories(
-      Array.isArray(data.categories)
-        ? (data.categories as WebCategory[])
-        : []
-    )
-  } catch (error) {
-    console.error('[WebCart] Error cargando la tienda:', error)
-  }
-}, [])
+
+    const { data } = await supabase
+      .from('categories')
+      .select('id, name')
+      .eq('store_id', store.id)
+      .eq('active', true)
+      .order('name')
+
+    setCategories(data || [])
+  }, [])
 
   useEffect(() => {
     void Promise.resolve().then(loadCategories)
@@ -100,12 +89,7 @@ export default function WebCartPage() {
       return
     }
 
-    if (!webSettings.whatsapp?.trim()) {
-      alert('La tienda no tiene un numero de WhatsApp configurado')
-      return
-    }
-
-    openCartWhatsApp(cart, webSettings.whatsapp)
+    openCartWhatsApp(cart)
   }
 
   return (
@@ -236,3 +220,5 @@ export default function WebCartPage() {
     </WebStoreLayout>
   )
 }
+
+

@@ -35,5 +35,5 @@ export type ExportDocument<T = Record<string, unknown>> = {
 export type InventoryExportScope = 'all' | 'page' | 'active' | 'low' | 'out' | 'category'
 export type CustomerExportScope = 'all' | 'customer' | 'fiscal' | 'partner'
 export type SalesExportPeriod = 'day' | 'month' | 'year' | 'custom'
-export type SalesExportChannel = 'all' | 'pos' | 'quotation'
+export type SalesExportChannel = 'all' | 'pos' | 'cooperative' | 'quotation'
 export type SalesExportStatus = 'all' | 'paid' | 'pending' | 'cancelled'

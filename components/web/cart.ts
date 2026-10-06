@@ -15,7 +15,7 @@ export function readCart() {
 
 export function saveCart(cart: WebCartItem[]) {
   window.localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cart))
-  window.dispatchEvent(new Event('shopdesk-cart-updated'))
+  window.dispatchEvent(new Event('guatapo-cart-updated'))
 }
 
 export function productToCartItem(product: WebProduct, quantity = 1): WebCartItem {
@@ -82,13 +82,9 @@ export function productAvailability(stock: number) {
   }
 }
 
-export function openProductWhatsApp(
-  product: WebProduct,
-  quantity = 1,
-  whatsappNumber = WHATSAPP_NUMBER
-) {
+export function openProductWhatsApp(product: WebProduct, quantity = 1) {
   const lines = [
-    'Hola, quiero hacer un pedido:',
+    'Hola Guatapo, quiero hacer un pedido:',
     '',
     `Producto: ${product.name}`,
     `Cantidad: ${quantity}`,
@@ -96,13 +92,10 @@ export function openProductWhatsApp(
     `Total: ${formatMoney(Number(product.sale_price || 0) * quantity)}`,
   ]
 
-  openWhatsApp(lines.join('\n'), whatsappNumber)
+  openWhatsApp(lines.join('\n'))
 }
 
-export function openCartWhatsApp(
-  cart: WebCartItem[],
-  whatsappNumber = WHATSAPP_NUMBER
-) {
+export function openCartWhatsApp(cart: WebCartItem[]) {
   const total = cart.reduce(
     (sum, item) => sum + Number(item.sale_price || 0) * item.quantity,
     0
@@ -115,22 +108,19 @@ export function openCartWhatsApp(
 
   openWhatsApp(
     [
-      'Hola, quiero hacer un pedido con estos productos:',
+      'Hola Guatapo, quiero hacer un pedido con estos productos:',
       '',
       ...productLines,
       '',
       `Total aproximado: ${formatMoney(total)}`,
-    ].join('\n'),
-    whatsappNumber
+    ].join('\n')
   )
 }
 
-function openWhatsApp(message: string, whatsappNumber = WHATSAPP_NUMBER) {
-  const cleanNumber = whatsappNumber.replace(/\D/g, '')
-  if (!cleanNumber) return
-
+function openWhatsApp(message: string) {
   window.open(
-    `https://wa.me/${cleanNumber}?text=${encodeURIComponent(message)}`,
+    `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(message)}`,
     '_blank'
   )
 }
+

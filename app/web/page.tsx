@@ -2,20 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { BadgePercent, ChevronRight, PackageSearch, ShieldCheck, Store, Truck } from 'lucide-react'
+import { supabase } from '@/lib/supabase'
 import { getProductMainImage } from '@/lib/product-images'
+import { getPublicStoreBySlug } from '@/lib/store-context'
 import { DEFAULT_WEB_SETTINGS, WebSettings, normalizeWebSettings, readLocalWebSettings, saveLocalWebSettings } from '@/lib/web-settings'
 import ProductCard from '@/components/web/ProductCard'
 import WebStoreLayout, { renderWebCategoryIcon } from '@/components/web/WebStoreLayout'
 import type { WebCategory, WebProduct, WebProductImage } from '@/components/web/types'
 import { buildCategoryUrl, orderCategoryNames, readCategoryFromSearchParams } from '@/lib/web-categories'
 
-type StorefrontPayload = {
-  store: { id: string }
-  webSettings: Partial<WebSettings> | null
-  categories: WebCategory[]
-  products: WebProduct[]
-  productImages: WebProductImage[]
-}
 
 export default function WebPage() {
   const [products, setProducts] = useState<WebProduct[]>([])
@@ -31,36 +26,35 @@ export default function WebPage() {
   const loadData = useCallback(async () => {
     setLoading(true)
     setError('')
-    try {
-      const response = await fetch('/api/public/storefront/shopdesk')
-      const payload: unknown = await response.json().catch(() => null)
-      if (!response.ok || !payload || typeof payload !== 'object') {
-        const message = payload && typeof payload === 'object' && 'error' in payload
-          ? String(payload.error)
-          : 'No se pudo cargar el catálogo.'
-        setError(message)
-        return
-      }
+    const store = await getPublicStoreBySlug('guatapo')
+    if (!store) { setError('Tienda no encontrada'); setLoading(false); return }
 
-      const storefront = payload as StorefrontPayload
-      let nextSettings = readLocalWebSettings(storefront.store.id)
-      if (storefront.webSettings) {
-        nextSettings = normalizeWebSettings(storefront.webSettings)
-        saveLocalWebSettings(storefront.store.id, nextSettings)
-      }
-      setWebSettings(nextSettings)
-      setProducts(
-        nextSettings.showFeaturedFirst
-          ? [...storefront.products].sort((a, b) => Number(Boolean(b.featured)) - Number(Boolean(a.featured)))
-          : storefront.products
-      )
-      setCategories(storefront.categories)
-      setProductImages(storefront.productImages)
-    } catch (error) {
-      setError(error instanceof Error ? error.message : 'No se pudo cargar el catálogo.')
-    } finally {
-      setLoading(false)
+    let nextSettings = readLocalWebSettings(store.id)
+    const settingsResult = await supabase.from('stores').select('web_settings').eq('id', store.id).maybeSingle()
+    if (!settingsResult.error && settingsResult.data?.web_settings) {
+      nextSettings = normalizeWebSettings(settingsResult.data.web_settings as Partial<WebSettings>)
+      saveLocalWebSettings(store.id, nextSettings)
     }
+    setWebSettings(nextSettings)
+
+    const { data: productsData, error: productsError } = await supabase
+      .from('products')
+      .select('id, name, sale_price, coop_price, web_visibility, stock, category, slug, image_url, short_description, full_description, specs, featured')
+      .eq('store_id', store.id)
+      .eq('active', true)
+      .eq('show_on_website', true)
+      .in('web_visibility', ['normal', 'both'])
+      .order(nextSettings.showFeaturedFirst ? 'featured' : 'created_at', { ascending: false })
+      .order('created_at', { ascending: false })
+
+    const { data: categoriesData } = await supabase.from('categories').select('id, name').eq('store_id', store.id).eq('active', true).order('name')
+    const { data: imagesData } = await supabase.from('product_images').select('id, product_id, image_url, is_primary, sort_order').eq('store_id', store.id).order('sort_order')
+
+    if (productsError) setError(productsError.message)
+    setProducts(productsData || [])
+    setCategories(categoriesData || [])
+    setProductImages(imagesData || [])
+    setLoading(false)
   }, [])
 
   useEffect(() => {
@@ -72,9 +66,9 @@ export default function WebPage() {
 
   useEffect(() => {
     const refresh = () => void loadData()
-    window.addEventListener('shopdesk:web-settings-updated', refresh)
+    window.addEventListener('guatapo:web-settings-updated', refresh)
     window.addEventListener('storage', refresh)
-    return () => { window.removeEventListener('shopdesk:web-settings-updated', refresh); window.removeEventListener('storage', refresh) }
+    return () => { window.removeEventListener('guatapo:web-settings-updated', refresh); window.removeEventListener('storage', refresh) }
   }, [loadData])
 
   const filteredProducts = useMemo(() => {
@@ -181,14 +175,7 @@ export default function WebPage() {
           <section id="productos" className="scroll-mt-32 bg-white px-6 py-14 sm:px-10">
             <div className="mb-8 flex flex-wrap items-end justify-between gap-4"><div><p className="font-black uppercase tracking-wide text-emerald-700">Catalogo</p><h2 className="text-3xl font-black">{search || category ? 'Resultados' : 'Mas vendidos'}</h2></div><p className="font-bold text-zinc-500">{filteredProducts.length} productos</p></div>
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-              {filteredProducts.map((product) => (
-                <ProductCard
-                  key={product.id}
-                  product={product}
-                  image={getProductMainImage(product.id, product.image_url, productImages)}
-                  whatsappNumber={webSettings.whatsapp}
-                />
-              ))}
+              {filteredProducts.map((product) => <ProductCard key={product.id} product={product} image={getProductMainImage(product.id, product.image_url, productImages)} />)}
             </div>
           </section>
         </>
@@ -196,3 +183,10 @@ export default function WebPage() {
     </WebStoreLayout>
   )
 }
+
+
+
+
+
+
+
