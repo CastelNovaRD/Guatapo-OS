@@ -1,6 +1,6 @@
 import { QRCodeSVG } from 'qrcode.react'
 import InvoiceWarranty from './InvoiceWarranty'
-import { formatPercent, Invoice80Customer, Invoice80FiscalCustomer, Invoice80Item, Invoice80PaymentMethod, Invoice80Sale, paymentMethodLabel, receiptDate, receiptMoney, receiptQrValue, taxPercentFromSale } from './invoice80-helpers'
+import { formatPercent, Invoice80Customer, Invoice80FiscalCustomer, Invoice80Item, Invoice80Payment, Invoice80PaymentMethod, Invoice80Sale, paymentKindLabel, paymentMethodLabel, receiptDate, receiptMoney, receiptQrValue, taxPercentFromSale } from './invoice80-helpers'
 
 type Props = {
   sale: Invoice80Sale
@@ -8,6 +8,7 @@ type Props = {
   customer: Invoice80FiscalCustomer | null
   fallbackCustomer: Invoice80Customer | null
   paymentMethod: Invoice80PaymentMethod | null
+  payments: Invoice80Payment[]
   ncfValidUntil?: string | null
 }
 
@@ -28,15 +29,20 @@ function ReceiptHeader() {
   )
 }
 
-function PaymentBlock({ sale, paymentMethod }: { sale: Invoice80Sale; paymentMethod: Invoice80PaymentMethod | null }) {
+function PaymentBlock({ sale, paymentMethod, payments }: { sale: Invoice80Sale; paymentMethod: Invoice80PaymentMethod | null; payments: Invoice80Payment[] }) {
   const method = paymentMethodLabel(sale, paymentMethod)
-  const isCash = method.includes('EFECTIVO')
+  const isSplitPayment = payments.length > 1
+  const hasCash = isSplitPayment ? payments.some((payment) => payment.payment_method === 'cash') : method.includes('EFECTIVO')
 
   return (
     <div className="mt-7 grid grid-cols-[1fr_1fr] gap-x-5 text-[15px] font-bold uppercase leading-tight">
-      <span className="text-right">MET. PAGO</span>
-      <span>{method}</span>
-      {isCash && (
+      {isSplitPayment ? (
+        <>
+          <span className="col-span-2 text-center">FORMA DE PAGO</span>
+          {payments.map((payment, index) => <div key={`${payment.payment_method}-${index}`} className="col-span-2 grid grid-cols-[1fr_1fr] gap-x-5"><span className="text-right">{paymentKindLabel(payment.payment_method)}</span><span>{receiptMoney(payment.amount)}</span></div>)}
+        </>
+      ) : <><span className="text-right">MET. PAGO</span><span>{method}</span></>}
+      {hasCash && (
         <>
           <span className="text-right">RECIBIDO</span>
           <span>{receiptMoney(sale.cash_received)}</span>
@@ -72,7 +78,7 @@ function FiscalTotals({ sale }: { sale: Invoice80Sale }) {
   )
 }
 
-export default function InvoiceFiscal80({ sale, items, customer, fallbackCustomer, paymentMethod, ncfValidUntil }: Props) {
+export default function InvoiceFiscal80({ sale, items, customer, fallbackCustomer, paymentMethod, payments, ncfValidUntil }: Props) {
   const qrValue = receiptQrValue(sale, items)
   const taxTotal = Number(sale.itbis || 0)
   const itemBaseTotal = items.reduce((sum, item) => sum + Number(item.total || 0), 0)
@@ -127,7 +133,7 @@ export default function InvoiceFiscal80({ sale, items, customer, fallbackCustome
         })}
       </div>
 
-      <PaymentBlock sale={sale} paymentMethod={paymentMethod} />
+      <PaymentBlock sale={sale} paymentMethod={paymentMethod} payments={payments} />
       <FiscalTotals sale={sale} />
       {sale.fiscal_notes && <p className="mt-5 break-words text-[12px]"><strong>Notas:</strong> {sale.fiscal_notes}</p>}
 

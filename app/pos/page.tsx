@@ -224,6 +224,11 @@ export default function POSPage() {
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [paymentMethodId, setPaymentMethodId] = useState('')
+  const [splitPaymentEnabled, setSplitPaymentEnabled] = useState(false)
+  const [splitPaymentSecondMethodId, setSplitPaymentSecondMethodId] = useState('')
+  const [splitPaymentFirstAmount, setSplitPaymentFirstAmount] = useState('')
+  const [splitPaymentSecondAmount, setSplitPaymentSecondAmount] = useState('')
+  const [splitCashReceived, setSplitCashReceived] = useState('')
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [customerCedula, setCustomerCedula] = useState('')
@@ -984,7 +989,14 @@ function getProductMainImage(product: Product) {
   const selectedPaymentName = selectedPaymentMethod?.name?.toLowerCase() || ''
   const isSalePendingPayment = fiscalSale && fiscalPaymentPending
   const isCreditNotePayment = !isSalePendingPayment && (paymentMethodId === 'virtual:credit-note' || selectedPaymentName.includes('nota de credito'))
-  const isCardPayment = !isSalePendingPayment && !isCreditNotePayment && (selectedPaymentName.includes('tarjeta') || paymentMethodId.includes('card'))
+  const isSplitPayment = splitPaymentEnabled && !isSalePendingPayment && !isCreditNotePayment
+  const splitPaymentSecondMethod = paymentMethods.find((method) => method.id === splitPaymentSecondMethodId)
+  const splitFirstKind = getPaymentMethodKind(paymentMethodId)
+  const splitSecondKind = getPaymentMethodKind(splitPaymentSecondMethodId)
+  const isSingleCardPayment = !isSalePendingPayment && !isCreditNotePayment && (selectedPaymentName.includes('tarjeta') || paymentMethodId.includes('card'))
+  const isCardPayment = isSplitPayment
+    ? splitFirstKind === 'card' || splitSecondKind === 'card'
+    : isSingleCardPayment
   const selectedRemainderPaymentMethod = paymentMethods.find(
     (method) => method.id === creditNoteRemainderMethodId
   )
@@ -1008,19 +1020,40 @@ function getProductMainImage(product: Product) {
   const taxAmount = fiscalSale ? subtotal * (normalizedTaxPercent / 100) : 0
   const totalBeforeShipping = subtotal + cardSurcharge + taxAmount
   const total = totalBeforeShipping + shipping
+  const splitFirstAmount = Number(splitPaymentFirstAmount || 0)
+  const splitSecondAmount = Number(splitPaymentSecondAmount || 0)
+  const splitPaidAmount = splitFirstAmount + splitSecondAmount
+  const splitRemainingAmount = total - splitPaidAmount
+  const splitCashApplied = isSplitPayment
+    ? (splitFirstKind === 'cash' ? splitFirstAmount : splitSecondKind === 'cash' ? splitSecondAmount : 0)
+    : 0
+  const splitCashChange = Number(splitCashReceived || 0) - splitCashApplied
+  const splitPaymentIsValid = isSplitPayment
+    && Boolean(paymentMethodId)
+    && Boolean(splitPaymentSecondMethodId)
+    && paymentMethodId !== splitPaymentSecondMethodId
+    && Number.isFinite(splitFirstAmount)
+    && Number.isFinite(splitSecondAmount)
+    && splitFirstAmount > 0
+    && splitSecondAmount > 0
+    && Math.abs(splitRemainingAmount) < 0.005
   const creditNoteAvailable = Math.max(0, Number(creditNoteLookup?.available_balance ?? creditNoteLookup?.total ?? 0))
   const creditNoteAppliedAmount = isCreditNotePayment ? Math.min(total, creditNoteAvailable) : 0
   const creditNoteRemainingTotal = isCreditNotePayment ? Math.max(0, total - creditNoteAppliedAmount) : 0
   const cardFee = useMemo(() => {
+    if (isSplitPayment) {
+      return (splitFirstKind === 'card' ? splitFirstAmount : 0) * (CARD_FEE_PERCENT / 100)
+        + (splitSecondKind === 'card' ? splitSecondAmount : 0) * (CARD_FEE_PERCENT / 100)
+    }
     if (isCardPayment) return (subtotal + taxAmount) * (CARD_FEE_PERCENT / 100)
     if (isCreditNotePayment && isRemainderCardPayment && creditNoteRemainingTotal > 0) {
       return creditNoteRemainingTotal * (CARD_FEE_PERCENT / 100)
     }
     return 0
-  }, [subtotal, taxAmount, isCardPayment, isCreditNotePayment, isRemainderCardPayment, creditNoteRemainingTotal])
+  }, [subtotal, taxAmount, isSplitPayment, splitFirstKind, splitSecondKind, splitFirstAmount, splitSecondAmount, isCardPayment, isCreditNotePayment, isRemainderCardPayment, creditNoteRemainingTotal])
 
   const netReceived = isSalePendingPayment ? 0 : isCreditNotePayment ? Math.max(0, creditNoteRemainingTotal - cardFee) : total - cardFee
-  const isCashPayment = !isSalePendingPayment && !isCreditNotePayment && selectedPaymentName.includes('efectivo')
+  const isCashPayment = !isSplitPayment && !isSalePendingPayment && !isCreditNotePayment && selectedPaymentName.includes('efectivo')
   const changeAmount = isCreditNotePayment && isRemainderCashPayment
     ? Number(creditNoteRemainderCashReceived || 0) - creditNoteRemainingTotal
     : Number(cashReceived || 0) - total
@@ -1426,6 +1459,11 @@ function getProductMainImage(product: Product) {
     setExistingCustomerId(null)
     setCustomerLookupMessage('')
     setShippingCost('')
+    setSplitPaymentEnabled(false)
+    setSplitPaymentSecondMethodId('')
+    setSplitPaymentFirstAmount('')
+    setSplitPaymentSecondAmount('')
+    setSplitCashReceived('')
     setFiscalSale(false)
     setFiscalPaymentPending(false)
     setAvailableNcf(null)
@@ -1491,6 +1529,21 @@ function getProductMainImage(product: Product) {
   function handleInvoiceClick() {
   if (cart.length === 0) return alert('Agrega productos al carrito')
 
+  if (isSplitPayment) {
+    if (!splitPaymentIsValid) {
+      return alert('Completa dos métodos distintos con montos positivos que sumen exactamente el total.')
+    }
+
+    if (splitCashApplied > 0) {
+      setSplitCashReceived('')
+      setCashModal(true)
+      return
+    }
+
+    completeSale()
+    return
+  }
+
   if (isCreditNotePayment) {
     if (!creditNoteLookup || creditNoteAppliedAmount <= 0) {
       return alert('Busca y selecciona una nota de credito valida antes de facturar.')
@@ -1521,6 +1574,15 @@ function getProductMainImage(product: Product) {
     if (!openCash) return alert('Debes abrir caja antes de facturar.')
     if (!storeId) return alert('Este usuario no tiene una tienda asignada.')
     if (cart.length === 0) return alert('Agrega productos al carrito')
+
+    if (isSplitPayment) {
+      if (!splitPaymentIsValid) {
+        return alert('Los dos pagos deben ser válidos, distintos y sumar exactamente el total.')
+      }
+      if (splitCashApplied > 0 && (!Number.isFinite(Number(splitCashReceived)) || splitCashChange < 0)) {
+        return alert('El efectivo entregado no cubre la parte pagada en efectivo.')
+      }
+    }
 
     if (requiresCustomer && (!customerName.trim() || !customerPhone.trim())) {
       return alert('Para celulares, tablets y laptops debes agregar nombre y teléfono')
@@ -1592,12 +1654,16 @@ function getProductMainImage(product: Product) {
     }
 
     const paymentMethodForSale = isCreditNotePayment ? creditNoteRemainderMethodId : paymentMethodId
-    const receivedForSale = isCreditNotePayment && isRemainderCashPayment
+    const receivedForSale = isSplitPayment && splitCashApplied > 0
+      ? Number(splitCashReceived || 0)
+      : isCreditNotePayment && isRemainderCashPayment
       ? Number(creditNoteRemainderCashReceived || 0)
       : isCashPayment
         ? Number(cashReceived || 0)
         : 0
-    const changeForSale = isCreditNotePayment && isRemainderCashPayment
+    const changeForSale = isSplitPayment && splitCashApplied > 0
+      ? Math.max(0, splitCashChange)
+      : isCreditNotePayment && isRemainderCashPayment
       ? Math.max(0, changeAmount)
       : isCashPayment
         ? Math.max(0, changeAmount)
@@ -1658,7 +1724,24 @@ function getProductMainImage(product: Product) {
       card_fee: number
     }>
 
-    if (isCreditNotePayment && creditNoteLookup && creditNoteAppliedAmount > 0) {
+    if (isSplitPayment) {
+      const splitPayments = [
+        { methodKind: splitFirstKind, amount: splitFirstAmount },
+        { methodKind: splitSecondKind, amount: splitSecondAmount },
+      ]
+
+      splitPayments.forEach((payment) => {
+        salePaymentRows.push({
+          store_id: storeId,
+          sale_id: sale.id,
+          payment_method: payment.methodKind,
+          amount: payment.amount,
+          reference: null,
+          credit_note_id: null,
+          card_fee: payment.methodKind === 'card' ? payment.amount * (CARD_FEE_PERCENT / 100) : 0,
+        })
+      })
+    } else if (isCreditNotePayment && creditNoteLookup && creditNoteAppliedAmount > 0) {
       salePaymentRows.push({
         store_id: storeId,
         sale_id: sale.id,
@@ -2467,6 +2550,10 @@ function getProductMainImage(product: Product) {
                 const nextMethodId = e.target.value
                 setPaymentMethodId(nextMethodId)
                 if (nextMethodId === 'virtual:credit-note') {
+                  setSplitPaymentEnabled(false)
+                  setSplitPaymentSecondMethodId('')
+                  setSplitPaymentFirstAmount('')
+                  setSplitPaymentSecondAmount('')
                   const firstRegularMethod = paymentMethods.find((method) => method.id !== 'virtual:credit-note')
                   setCreditNoteRemainderMethodId(firstRegularMethod?.id || '')
                 } else {
@@ -2484,6 +2571,106 @@ function getProductMainImage(product: Product) {
               ))}
             </select>
           </div>
+
+          {!isSalePendingPayment && !isCreditNotePayment && (
+            <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4">
+              <label className="flex items-center gap-3 text-sm font-bold text-zinc-800">
+                <input
+                  type="checkbox"
+                  checked={splitPaymentEnabled}
+                  onChange={(event) => {
+                    const enabled = event.target.checked
+                    setSplitPaymentEnabled(enabled)
+                    setSplitCashReceived('')
+
+                    if (enabled) {
+                      const firstRegularMethod = paymentMethods.find((method) => method.id !== 'virtual:credit-note')
+                      const firstMethodId = paymentMethodId === 'virtual:credit-note'
+                        ? firstRegularMethod?.id || ''
+                        : paymentMethodId
+                      const secondMethod = paymentMethods.find((method) => method.id !== 'virtual:credit-note' && method.id !== firstMethodId)
+                      setPaymentMethodId(firstMethodId)
+                      setSplitPaymentSecondMethodId(secondMethod?.id || '')
+                      setSplitPaymentFirstAmount(String(total))
+                      setSplitPaymentSecondAmount('')
+                    } else {
+                      setSplitPaymentSecondMethodId('')
+                      setSplitPaymentFirstAmount('')
+                      setSplitPaymentSecondAmount('')
+                    }
+                  }}
+                  className="h-4 w-4 accent-emerald-600"
+                />
+                Dividir pago
+              </label>
+
+              {isSplitPayment && (
+                <div className="mt-4 space-y-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block text-sm font-semibold text-zinc-700">
+                      Método 1
+                      <select
+                        value={paymentMethodId}
+                        onChange={(event) => {
+                          const nextMethodId = event.target.value
+                          setPaymentMethodId(nextMethodId)
+                          if (nextMethodId === splitPaymentSecondMethodId) setSplitPaymentSecondMethodId('')
+                          setSplitCashReceived('')
+                        }}
+                        className="mt-1 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
+                      >
+                        {paymentMethods.filter((method) => method.id !== 'virtual:credit-note').map((method) => (
+                          <option key={method.id} value={method.id}>{method.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block text-sm font-semibold text-zinc-700">
+                      Monto 1
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={splitPaymentFirstAmount}
+                        onChange={(event) => { setSplitPaymentFirstAmount(event.target.value); setSplitCashReceived('') }}
+                        className="mt-1 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
+                      />
+                    </label>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block text-sm font-semibold text-zinc-700">
+                      Método 2
+                      <select
+                        value={splitPaymentSecondMethodId}
+                        onChange={(event) => { setSplitPaymentSecondMethodId(event.target.value); setSplitCashReceived('') }}
+                        className="mt-1 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
+                      >
+                        <option value="">Selecciona un método</option>
+                        {paymentMethods.filter((method) => method.id !== 'virtual:credit-note' && method.id !== paymentMethodId).map((method) => (
+                          <option key={method.id} value={method.id}>{method.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block text-sm font-semibold text-zinc-700">
+                      Monto 2
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={splitPaymentSecondAmount}
+                        onChange={(event) => { setSplitPaymentSecondAmount(event.target.value); setSplitCashReceived('') }}
+                        className="mt-1 w-full rounded-xl border border-zinc-300 bg-white px-3 py-2 outline-none focus:border-emerald-500"
+                      />
+                    </label>
+                  </div>
+                  <div className={`grid gap-1 rounded-xl border p-3 text-sm ${splitPaymentIsValid ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
+                    <div className="flex justify-between"><span>Total</span><span className="font-bold">{formatMoney(total)}</span></div>
+                    <div className="flex justify-between"><span>Pagado</span><span className="font-bold">{formatMoney(splitPaidAmount)}</span></div>
+                    <div className="flex justify-between"><span>Restante</span><span className="font-bold">{formatMoney(splitRemainingAmount)}</span></div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {isCreditNotePayment && (
             <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
@@ -2609,6 +2796,10 @@ function getProductMainImage(product: Product) {
             {cardSurcharge > 0 && <BigRow label="Recargo tarjeta al cliente" value={cardSurcharge} />}
             {shipping > 0 && <BigRow label="Envío" value={shipping} />}
             <BigRow label="Total venta" value={total} />
+            {isSplitPayment && <BigRow label={paymentMethods.find((method) => method.id === paymentMethodId)?.name || 'Método 1'} value={splitFirstAmount} />}
+            {isSplitPayment && <BigRow label={splitPaymentSecondMethod?.name || 'Método 2'} value={splitSecondAmount} />}
+            {isSplitPayment && <BigRow label="Pagado" value={splitPaidAmount} />}
+            {isSplitPayment && <BigRow label="Restante" value={splitRemainingAmount} />}
             {isCreditNotePayment && <BigRow label="Nota de credito aplicada" value={creditNoteAppliedAmount} />}
             {isCreditNotePayment && creditNoteRemainingTotal > 0 && <BigRow label="Pendiente a pagar" value={creditNoteRemainingTotal} />}
             <BigRow label="Comisión tarjeta" value={cardFee} />
@@ -2730,13 +2921,13 @@ function getProductMainImage(product: Product) {
     <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
       <h2 className="text-2xl font-bold">Pago en efectivo</h2>
       <p className="mt-1 text-zinc-500">
-        Ingresa la cantidad entregada por el cliente.
+        {isSplitPayment ? 'Ingresa el efectivo entregado para la parte pagada en efectivo.' : 'Ingresa la cantidad entregada por el cliente.'}
       </p>
 
       <div className="mt-5 rounded-xl bg-zinc-50 p-4">
         <div className="flex justify-between text-lg">
-          <span>Total</span>
-          <span className="font-bold">{formatMoney(total)}</span>
+          <span>{isSplitPayment ? 'Efectivo aplicado' : 'Total'}</span>
+          <span className="font-bold">{formatMoney(isSplitPayment ? splitCashApplied : total)}</span>
         </div>
 
         <label className="mt-5 block text-sm text-zinc-500">
@@ -2744,8 +2935,10 @@ function getProductMainImage(product: Product) {
         </label>
         <input
           type="number"
-          value={cashReceived}
-          onChange={(e) => setCashReceived(e.target.value)}
+          min="0"
+          step="0.01"
+          value={isSplitPayment ? splitCashReceived : cashReceived}
+          onChange={(e) => isSplitPayment ? setSplitCashReceived(e.target.value) : setCashReceived(e.target.value)}
           className="mt-2 w-full rounded-xl border border-zinc-300 px-4 py-3 text-2xl font-bold outline-none focus:border-emerald-500"
           placeholder="Ej: 1000"
           autoFocus
@@ -2755,10 +2948,10 @@ function getProductMainImage(product: Product) {
           <span>Cambio</span>
           <span
             className={`font-black ${
-              changeAmount < 0 ? 'text-red-500' : 'text-emerald-600'
+              (isSplitPayment ? splitCashChange : changeAmount) < 0 ? 'text-red-500' : 'text-emerald-600'
             }`}
           >
-            {formatMoney(changeAmount)}
+            {formatMoney(isSplitPayment ? splitCashChange : changeAmount)}
           </span>
         </div>
       </div>
@@ -2773,8 +2966,8 @@ function getProductMainImage(product: Product) {
 
         <button
           onClick={() => {
-            if (changeAmount < 0) {
-              alert('El dinero entregado no cubre el total.')
+            if ((isSplitPayment ? splitCashChange : changeAmount) < 0) {
+              alert(isSplitPayment ? 'El efectivo entregado no cubre la parte pagada en efectivo.' : 'El dinero entregado no cubre el total.')
               return
             }
 

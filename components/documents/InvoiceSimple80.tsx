@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabase'
 import InvoiceFiscal80 from './InvoiceFiscal80'
 import InvoiceQuick80 from './InvoiceQuick80'
 import InvoiceA4 from './InvoiceA4'
-import type { Invoice80Customer, Invoice80FiscalCustomer, Invoice80Item, Invoice80PaymentMethod, Invoice80Sale } from './invoice80-helpers'
+import type { Invoice80Customer, Invoice80FiscalCustomer, Invoice80Item, Invoice80Payment, Invoice80PaymentMethod, Invoice80Sale } from './invoice80-helpers'
 
 export default function InvoiceSimple80() {
   const params = useParams()
@@ -18,6 +18,7 @@ export default function InvoiceSimple80() {
   const [customer, setCustomer] = useState<Invoice80Customer | null>(null)
   const [fiscalCustomer, setFiscalCustomer] = useState<Invoice80FiscalCustomer | null>(null)
   const [paymentMethod, setPaymentMethod] = useState<Invoice80PaymentMethod | null>(null)
+  const [payments, setPayments] = useState<Invoice80Payment[]>([])
   const [ncfValidUntil, setNcfValidUntil] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -44,6 +45,14 @@ export default function InvoiceSimple80() {
       .eq('sale_id', saleId)
 
     setItems((itemsData || []) as Invoice80Item[])
+
+    const { data: paymentData } = await supabase
+      .from('sale_payments')
+      .select('payment_method, amount, card_fee')
+      .eq('sale_id', saleId)
+      .order('created_at')
+
+    setPayments((paymentData || []) as Invoice80Payment[])
 
     if (saleData.customer_id) {
       const { data: customerData } = await supabase
@@ -132,7 +141,7 @@ export default function InvoiceSimple80() {
       </div>
 
       {format === 'a4' ? (
-        <InvoiceA4 sale={sale} items={items} customer={customer} paymentMethod={paymentMethod} />
+        <InvoiceA4 sale={sale} items={items} customer={customer} paymentMethod={paymentMethod} payments={payments} />
       ) : sale.ncf ? (
         <InvoiceFiscal80
           sale={sale}
@@ -140,6 +149,7 @@ export default function InvoiceSimple80() {
           customer={fiscalCustomer}
           fallbackCustomer={customer}
           paymentMethod={paymentMethod}
+          payments={payments}
           ncfValidUntil={ncfValidUntil}
         />
       ) : (
@@ -148,6 +158,7 @@ export default function InvoiceSimple80() {
           items={items}
           customer={customer}
           paymentMethod={paymentMethod}
+          payments={payments}
         />
       )}
 

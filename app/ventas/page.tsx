@@ -55,6 +55,11 @@ type PaymentMethod = {
   name: string
 }
 
+type SalePayment = {
+  payment_method: string | null
+  amount: number | null
+}
+
 type CreditNote = {
   id: string
   sale_id: string
@@ -64,6 +69,16 @@ type CreditNote = {
 }
 
 type CustomerLookup = { id: string; full_name: string }
+
+function salePaymentLabel(method: string | null) {
+  const labels: Record<string, string> = {
+    cash: 'Efectivo',
+    card: 'Tarjeta',
+    transfer: 'Transferencia',
+    credit_note: 'Nota de crédito',
+  }
+  return labels[method || ''] || 'Pago'
+}
 
 export default function VentasPage() {
   const [sales, setSales] = useState<Sale[]>([])
@@ -85,6 +100,7 @@ export default function VentasPage() {
   const [saleItems, setSaleItems] = useState<SaleItem[]>([])
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | null>(null)
+  const [salePayments, setSalePayments] = useState<SalePayment[]>([])
   const [creditNotes, setCreditNotes] = useState<CreditNote[]>([])
   const [detailsLoading, setDetailsLoading] = useState(false)
 
@@ -248,6 +264,7 @@ export default function VentasPage() {
     setSaleItems([])
     setCustomer(null)
     setPaymentMethod(null)
+    setSalePayments([])
     setCreditNotes([])
 
     const { data: itemsData, error: itemsError } = await supabase
@@ -281,6 +298,14 @@ export default function VentasPage() {
       setPaymentMethod(methodData || null)
     }
 
+    const { data: salePaymentRows } = await supabase
+      .from('sale_payments')
+      .select('payment_method, amount')
+      .eq('sale_id', sale.id)
+      .order('created_at')
+
+    setSalePayments((salePaymentRows || []) as SalePayment[])
+
     const { data: creditNoteRows } = await supabase
       .from('credit_notes')
       .select('id, sale_id, credit_note_number, total, created_at')
@@ -297,6 +322,7 @@ export default function VentasPage() {
     setSaleItems([])
     setCustomer(null)
     setPaymentMethod(null)
+    setSalePayments([])
     setCreditNotes([])
   }
 
@@ -677,8 +703,22 @@ export default function VentasPage() {
                 <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-3">
                   <InfoCard title="Cliente" value={customer?.full_name || 'Consumidor Final'} />
                   <InfoCard title="Teléfono" value={customer?.phone || '-'} />
-                  <InfoCard title="Método pago" value={paymentMethod?.name || '-'} />
+                  <InfoCard title="Método pago" value={salePayments.length > 1 ? 'Pago dividido' : paymentMethod?.name || '-'} />
                 </div>
+
+                {salePayments.length > 1 && (
+                  <div className="mb-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                    <h3 className="font-bold text-emerald-900">Pago dividido</h3>
+                    <div className="mt-3 space-y-2">
+                      {salePayments.map((payment, index) => (
+                        <div key={`${payment.payment_method}-${index}`} className="flex justify-between rounded-xl bg-white px-3 py-2 text-sm">
+                          <span className="font-semibold">{salePaymentLabel(payment.payment_method)}</span>
+                          <span className="font-bold">{formatMoney(payment.amount || 0)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {creditNotes.length > 0 && (
                   <div className="mb-6 rounded-2xl border border-orange-200 bg-orange-50 p-4">

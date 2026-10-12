@@ -54,6 +54,12 @@ export type Invoice80PaymentMethod = {
   name: string
 }
 
+export type Invoice80Payment = {
+  payment_method: string | null
+  amount: number | null
+  card_fee?: number | null
+}
+
 export function receiptMoney(value: number | string | null | undefined) {
   return `RD$${Number(value || 0).toLocaleString('en-US', {
     minimumFractionDigits: 2,
@@ -79,6 +85,16 @@ export function paymentMethodLabel(sale: Invoice80Sale, paymentMethod: Invoice80
   if (Number(sale.cash_received || 0) > 0) return 'EFECTIVO'
   if (Number(sale.card_fee || 0) > 0) return 'TARJETA'
   return 'TRANSFERENCIA'
+}
+
+export function paymentKindLabel(paymentMethod: string | null | undefined) {
+  const labels: Record<string, string> = {
+    cash: 'EFECTIVO',
+    card: 'TARJETA',
+    transfer: 'TRANSFERENCIA',
+    credit_note: 'NOTA DE CRÉDITO',
+  }
+  return labels[paymentMethod || ''] || 'PAGO'
 }
 
 export function receiptQrValue(sale: Invoice80Sale, items: Invoice80Item[]) {
