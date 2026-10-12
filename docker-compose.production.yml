@@ -30,3 +30,5 @@ services:
 networks:
   caddy:
     external: true
+    name: castelnova_proxy
+
