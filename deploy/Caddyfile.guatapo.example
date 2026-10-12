@@ -1,0 +1,3 @@
+guatapo.com, www.guatapo.com, app.guatapo.com {
+  reverse_proxy guatapo-os:3000
+}
