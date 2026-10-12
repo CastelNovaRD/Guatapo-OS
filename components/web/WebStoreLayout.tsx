@@ -1,11 +1,11 @@
 ﻿'use client'
 
 import { type MouseEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
-import { BadgePercent, ChevronRight, Computer, Headphones, Laptop, MapPin, MonitorSmartphone, Phone, Smartphone, TabletSmartphone, X, Zap } from 'lucide-react'
+import { BadgePercent, BatteryCharging, Cable, ChevronRight, Computer, HardDrive, Headphones, Laptop, LayoutGrid, MapPin, Mic, Monitor, MonitorSmartphone, MousePointer2, Phone, Plug, ShoppingBag, Smartphone, Speaker, Tablet, TabletSmartphone, Watch, Wrench, X, Zap } from 'lucide-react'
 import type { WebCategory } from './types'
 import WebHeader, { SocialIcon, type SocialType } from './WebHeader'
 import { DEFAULT_WEB_SETTINGS, formatScheduleRange, getScheduleRows, getStoreOpenStatus, type WebSettings } from '@/lib/web-settings'
-import { buildCategoryUrl, orderCategoryNames } from '@/lib/web-categories'
+import { buildCategoryUrl, normalizeWebCategory, OFFICIAL_WEB_CATEGORIES, orderCategoryNames } from '@/lib/web-categories'
 
 type WebStoreLayoutProps = {
   categories: WebCategory[]
@@ -15,6 +15,7 @@ type WebStoreLayoutProps = {
   onSelectCategory: (category: string) => void
   children: ReactNode
   settings?: WebSettings
+  useOfficialCategories?: boolean
 }
 
 export const WEB_CATEGORY_ICON_OPTIONS = [
@@ -31,6 +32,23 @@ export const WEB_CATEGORY_ICON_OPTIONS = [
 ]
 
 function autoCategoryIcon(name: string, size: number) {
+  const canonicalCategory = normalizeWebCategory(name)
+  if (canonicalCategory === 'Celulares') return <Smartphone size={size} />
+  if (canonicalCategory === 'Tablets') return <Tablet size={size} />
+  if (canonicalCategory === 'Laptops') return <Laptop size={size} />
+  if (canonicalCategory === 'Monitores') return <Monitor size={size} />
+  if (canonicalCategory === 'Periféricos') return <MousePointer2 size={size} />
+  if (canonicalCategory === 'Cargadores') return <BatteryCharging size={size} />
+  if (canonicalCategory === 'Cables') return <Cable size={size} />
+  if (canonicalCategory === 'Adaptadores') return <Plug size={size} />
+  if (canonicalCategory === 'Audífonos') return <Headphones size={size} />
+  if (canonicalCategory === 'Bocinas') return <Speaker size={size} />
+  if (canonicalCategory === 'Micrófonos') return <Mic size={size} />
+  if (canonicalCategory === 'Memorias y Discos') return <HardDrive size={size} />
+  if (canonicalCategory === 'Relojes') return <Watch size={size} />
+  if (canonicalCategory === 'Herramientas') return <Wrench size={size} />
+  if (canonicalCategory === 'Accesorios') return <ShoppingBag size={size} />
+  if (canonicalCategory === 'Liquidación') return <BadgePercent size={size} />
   const text = name.toLowerCase()
   if (text.includes('cel')) return <Smartphone size={size} />
   if (text.includes('tablet')) return <TabletSmartphone size={size} />
@@ -43,6 +61,7 @@ function autoCategoryIcon(name: string, size: number) {
 }
 
 export function renderWebCategoryIcon(name: string, iconValue?: string, size = 18) {
+  if (normalizeWebCategory(name)) return autoCategoryIcon(name, size)
   const value = (iconValue || 'auto').trim()
   const key = value.toLowerCase()
   if (!value || key === 'auto') return autoCategoryIcon(name, size)
@@ -68,12 +87,15 @@ function socialHref(value = '', type?: string) {
   return `https://${clean}`
 }
 
-export default function WebStoreLayout({ categories, selectedCategory, search, onSearchChange, onSelectCategory, children, settings }: WebStoreLayoutProps) {
+export default function WebStoreLayout({ categories, selectedCategory, search, onSearchChange, onSelectCategory, children, settings, useOfficialCategories = false }: WebStoreLayoutProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [footerLogoBroken, setFooterLogoBroken] = useState(false)
   const [statusTime, setStatusTime] = useState(() => new Date())
   const fallbackCategories = ['Computadoras', 'Tabletas', 'Adaptadores', 'Audio', 'Celulares', 'T.V. y cine en casa', 'Tecnologia portatil', 'Oferta']
-  const visibleCategories = useMemo(() => orderCategoryNames(categories.length ? categories.map((category) => category.name) : fallbackCategories, settings?.categoryOrder || []), [categories, settings?.categoryOrder])
+  const visibleCategories = useMemo(
+    () => useOfficialCategories ? OFFICIAL_WEB_CATEGORIES : orderCategoryNames(categories.length ? categories.map((category) => category.name) : fallbackCategories, settings?.categoryOrder || []),
+    [categories, settings?.categoryOrder, useOfficialCategories]
+  )
   const footerLogo = !footerLogoBroken && settings?.logoUrl?.trim() ? settings.logoUrl : DEFAULT_WEB_SETTINGS.logoUrl
   const footerDescription = settings?.footerDescription || DEFAULT_WEB_SETTINGS.footerDescription
   const contactPhone = settings?.contactPhone || DEFAULT_WEB_SETTINGS.contactPhone
@@ -115,7 +137,7 @@ export default function WebStoreLayout({ categories, selectedCategory, search, o
         onClick={() => chooseCategory('')}
         className={`flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left text-sm font-black transition ${selectedCategory === '' ? 'bg-zinc-950 text-white' : 'text-zinc-950 hover:bg-emerald-50 hover:text-emerald-700'}`}
       >
-        <span className="flex items-center gap-3 uppercase"><BadgePercent size={18} /> GENERAL</span>
+        <span className="flex items-center gap-3 uppercase"><LayoutGrid size={18} /> GENERAL</span>
         <ChevronRight size={16} />
       </button>
       {visibleCategories.map((category) => (

@@ -42,7 +42,7 @@ export default function ProductCard({ product, image, onCartChange, productUrlBa
 
       <Link href={productUrl} className="flex h-56 items-center justify-center bg-gradient-to-b from-zinc-50 to-white px-5 pt-8">
         {image ? (
-          <img src={image} alt={product.name} className="h-full w-full object-contain transition duration-300 group-hover:scale-105" />
+          <img src={image} alt={product.name} loading="lazy" decoding="async" className="h-full w-full object-contain transition duration-300 group-hover:scale-105" />
         ) : (
           <ImageIcon className="text-zinc-300" size={58} />
         )}

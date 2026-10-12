@@ -6,12 +6,13 @@ import { supabase } from '@/lib/supabase'
 import { getCurrentStoreId } from '@/lib/store-context'
 import { DEFAULT_WEB_SETTINGS, WebBenefit, WebPromotion, WebScheduleGroup, WebSettings, formatScheduleRange, getScheduleRows, normalizeWebSettings, readLocalWebSettings, saveLocalWebSettings } from '@/lib/web-settings'
 import { WEB_CATEGORY_ICON_OPTIONS, renderWebCategoryIcon } from '@/components/web/WebStoreLayout'
+import WebBannersManager from '@/components/web/WebBannersManager'
 import { BadgePercent, CheckCircle, Code2, Eye, Globe, GripVertical, ImageIcon, LayoutTemplate, LinkIcon, Megaphone, Monitor, Package, Palette, Plus, Save, Search, Settings, Share2, ShieldCheck, ShoppingBag, Smartphone, Sparkles, Tablet, Tags, Trash2, Upload } from 'lucide-react'
 
 type StoreRow = { id: string; name: string; slug: string | null; phone: string | null; whatsapp: string | null }
 type StoreCategory = { id: string; name: string }
 type ProductStats = { total: number; visibleNormal: number; visibleCoop: number; featured: number; discounted: number }
-type TabId = 'general' | 'appearance' | 'hero' | 'promotions' | 'products' | 'categories' | 'benefits' | 'social' | 'colors' | 'seo' | 'advanced'
+type TabId = 'general' | 'appearance' | 'hero' | 'banners' | 'promotions' | 'products' | 'categories' | 'benefits' | 'social' | 'colors' | 'seo' | 'advanced'
 type PreviewMode = 'desktop' | 'tablet' | 'mobile'
 
 
@@ -25,6 +26,7 @@ const tabs: Array<{ id: TabId; label: string; icon: ReactNode }> = [
   { id: 'general', label: 'General', icon: <Settings size={18} /> },
   { id: 'appearance', label: 'Apariencia', icon: <LayoutTemplate size={18} /> },
   { id: 'hero', label: 'Banner Principal', icon: <ImageIcon size={18} /> },
+  { id: 'banners', label: 'Banners', icon: <Megaphone size={18} /> },
   { id: 'promotions', label: 'Promociones', icon: <Megaphone size={18} /> },
   { id: 'products', label: 'Productos', icon: <Package size={18} /> },
   { id: 'categories', label: 'Categorias', icon: <Tags size={18} /> },
@@ -165,6 +167,8 @@ export default function WebSettingsPage() {
         return <TabPanel title="Apariencia" description="Controla las secciones visibles y la identidad visual base." icon={<LayoutTemplate />}><div className="grid gap-4 md:grid-cols-2"><ImageUploader label="Logo de la tienda" value={settings.logoUrl} onChange={(value) => update('logoUrl', value)} /><ImageUploader label="Imagen principal del banner" value={settings.heroImageUrl} onChange={(value) => update('heroImageUrl', value)} /><Toggle label="Mostrar banner principal" checked={settings.showHero} onChange={(value) => update('showHero', value)} /><Toggle label="Mostrar promociones" checked={settings.showPromoCards} onChange={(value) => update('showPromoCards', value)} /><Toggle label="Mostrar beneficios" checked={settings.showBenefits} onChange={(value) => update('showBenefits', value)} /><Toggle label="Mostrar categorias abajo" checked={settings.showCategorySection} onChange={(value) => update('showCategorySection', value)} /></div></TabPanel>
       case 'hero':
         return <TabPanel title="Banner Principal" description="Edita el primer bloque que ve el cliente al entrar a la tienda." icon={<ImageIcon />}><div className="grid gap-4 md:grid-cols-2"><Input label="Etiqueta" value={settings.heroBadge} onChange={(value) => update('heroBadge', value)} /><Input label="Texto del boton" value={settings.heroButtonText} onChange={(value) => update('heroButtonText', value)} /><Input label="Titulo principal" value={settings.heroTitle} onChange={(value) => update('heroTitle', value)} className="md:col-span-2" /><Textarea label="Subtitulo" value={settings.heroSubtitle} onChange={(value) => update('heroSubtitle', value)} className="md:col-span-2" /><Input label="Posicion de scroll del boton" value={String(settings.heroScrollTarget)} onChange={(value) => update('heroScrollTarget', Number(value) || 0)} /><ImageUploader label="Imagen del banner" value={settings.heroImageUrl} onChange={(value) => update('heroImageUrl', value)} /></div></TabPanel>
+      case 'banners':
+        return store ? <WebBannersManager storeId={store.id} /> : null
       case 'promotions':
         return <TabPanel title="Promociones" description="Crea varias promociones y ofertas visuales para la portada." icon={<Megaphone />} action={<button onClick={addPromotion} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 font-black text-white"><Plus size={18} /> Agregar</button>}><div className="space-y-4">{settings.promotions.map((promotion, index) => <div key={promotion.id} className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4"><div className="mb-4 flex items-center justify-between gap-3"><h3 className="font-black text-zinc-950">Promocion {index + 1}</h3><button onClick={() => removePromotion(promotion.id)} className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-red-200 bg-white text-red-600 hover:bg-red-50"><Trash2 size={18} /></button></div><div className="grid gap-4 md:grid-cols-2"><Input label="Etiqueta" value={promotion.eyebrow} onChange={(value) => updatePromotion(promotion.id, { eyebrow: value })} /><Input label="Categoria destino" value={promotion.category} onChange={(value) => updatePromotion(promotion.id, { category: value })} /><Input label="Titulo" value={promotion.title} onChange={(value) => updatePromotion(promotion.id, { title: value })} /><Input label="Boton" value={promotion.button} onChange={(value) => updatePromotion(promotion.id, { button: value })} /><Textarea label="Descripcion" value={promotion.subtitle} onChange={(value) => updatePromotion(promotion.id, { subtitle: value })} /><ColorInput label="Color" value={promotion.color} onChange={(value) => updatePromotion(promotion.id, { color: value })} /><ImageUploader label="Imagen de promocion" value={promotion.imageUrl} onChange={(value) => updatePromotion(promotion.id, { imageUrl: value })} className="md:col-span-2" /></div></div>)}</div></TabPanel>
       case 'products':
