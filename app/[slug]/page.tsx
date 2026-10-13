@@ -171,7 +171,7 @@ export default function PublicRafflePage() {
   }
 
   if (notFound) return renderNotFound()
-  if (!raffle) return <SimpleScreen title="Cargando rifa..." />
+  if (!raffle) return <SimpleScreen title="Preparando los detalles de la rifa..." />
 
   const whatsappMessage = submission ? `Hola, realice una transferencia para participar en la rifa "${submission.raffleTitle}".\n\nNombre: ${submission.full_name}\nCedula: ${submission.cedula}\nCantidad de boletos: ${submission.quantity}\nTotal: ${formatMoney(submission.total)}\nBanco: ${submission.bankName}\nCodigo de solicitud: ${submission.code}\n\nYa subi el comprobante en la pagina.` : ''
   const whatsappHref = submission ? `${whatsappUrl}?text=${encodeURIComponent(whatsappMessage)}` : whatsappUrl

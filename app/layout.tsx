@@ -4,6 +4,17 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Guatapo OS",
   description: "Sistema administrativo Guatapo",
+  robots: {
+    index: false,
+    follow: false,
+    googleBot: {
+      index: false,
+      follow: false,
+      'max-image-preview': 'none',
+      'max-snippet': -1,
+      'max-video-preview': -1,
+    },
+  },
 };
 
 export default function RootLayout({
