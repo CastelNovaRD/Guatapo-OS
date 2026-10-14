@@ -1,10 +1,11 @@
 ﻿'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import AppShell from '@/components/AppShell'
 import { supabase } from '@/lib/supabase'
 import { formatMoney } from '@/lib/format'
 import { getCurrentStoreId } from '@/lib/store-context'
+import { productMatchesSearch } from '@/lib/product-search'
 import {
   CheckCircle,
   CreditCard,
@@ -24,7 +25,6 @@ type Product = {
   sku: string | null
   barcode: string | null
   image_url: string | null
-  sale_price: number
   coop_price: number | null
   cost: number
   stock: number
@@ -55,6 +55,7 @@ type CooperativeCommission = {
 type LastSale = {
   saleId: string
   total: number
+  shippingCost: number
   cooperativeName: string
   invoiceNumber: string | null
   commissionPercent: number
@@ -87,7 +88,7 @@ function formatPhone(value: string) {
 }
 
 function productPrice(product: Product) {
-  return Number(product.coop_price || product.sale_price || 0)
+  return Number(product.coop_price || 0)
 }
 
 export default function CooperativasPage() {
@@ -97,6 +98,7 @@ export default function CooperativasPage() {
   const [storeId, setStoreId] = useState<string | null>(null)
   const [cart, setCart] = useState<CartItem[]>([])
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [memberName, setMemberName] = useState('')
   const [memberDocument, setMemberDocument] = useState('')
   const [memberPhone, setMemberPhone] = useState('')
@@ -106,75 +108,156 @@ export default function CooperativasPage() {
   const [customCooperative, setCustomCooperative] = useState('')
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [productsLoading, setProductsLoading] = useState(true)
   const [lastSale, setLastSale] = useState<LastSale | null>(null)
   const [visibleProductsLimit, setVisibleProductsLimit] = useState(10)
+  const [shippingCost, setShippingCost] = useState('')
 
   const searchRef = useRef<HTMLInputElement>(null)
+  const productsFetchInFlightRef = useRef(false)
+  const pendingProductsFetchRef = useRef<{ storeId: string; limit: number; searchTerm: string } | null>(null)
+  const hasLoadedProductsRef = useRef(false)
 
   useEffect(() => {
     void Promise.resolve().then(loadData)
   }, [])
 
-  async function loadData() {
+  const loadCooperativeProducts = useCallback(async (
+    currentStoreId: string,
+    limit: number,
+    searchTerm: string,
+    options: { showLoading?: boolean } = {}
+  ) => {
+    const fetchParams = { storeId: currentStoreId, limit, searchTerm }
+
+    if (productsFetchInFlightRef.current) {
+      pendingProductsFetchRef.current = fetchParams
+      return
+    }
+
+    productsFetchInFlightRef.current = true
+    const showLoading = options.showLoading ?? !hasLoadedProductsRef.current
+    if (showLoading) setProductsLoading(true)
+
+    try {
+      const cleanSearch = searchTerm.replace(/[%,_]/g, '').trim()
+      let query = supabase
+        .from('products')
+        .select('id, name, sku, barcode, image_url, coop_price, cost, stock, product_type')
+        .eq('store_id', currentStoreId)
+        .eq('active', true)
+        .in('web_visibility', ['coop', 'both'])
+        .gt('stock', 0)
+
+      if (cleanSearch) {
+        query = query.or(`name.ilike.%${cleanSearch}%,sku.ilike.%${cleanSearch}%,barcode.ilike.%${cleanSearch}%,product_type.ilike.%${cleanSearch}%`)
+      }
+
+      const productsRequest = cleanSearch
+        ? query.order('name')
+        : query.order('name').range(0, Math.max(0, limit - 1))
+      const { data: productsData, error: productsError } = await productsRequest
+
+      if (productsError) {
+        alert('Error cargando productos cooperativos: ' + productsError.message)
+        return
+      }
+
+      const nextProducts = (productsData || []) as Product[]
+      const productIds = nextProducts.map((product) => product.id)
+      const { data: imagesData, error: imagesError } = productIds.length
+        ? await supabase
+            .from('product_images')
+            .select('id, product_id, image_url, is_primary, sort_order')
+            .eq('store_id', currentStoreId)
+            .in('product_id', productIds)
+            .order('sort_order')
+        : { data: [], error: null }
+
+      if (imagesError) console.warn('[Cooperativas] Error cargando imágenes:', imagesError.message)
+
+      if (!pendingProductsFetchRef.current) {
+        setProducts(nextProducts)
+        setProductImages((imagesData || []) as ProductImage[])
+        hasLoadedProductsRef.current = true
+      }
+    } finally {
+      if (showLoading) setProductsLoading(false)
+      productsFetchInFlightRef.current = false
+
+      const pendingFetch = pendingProductsFetchRef.current
+      if (pendingFetch) {
+        pendingProductsFetchRef.current = null
+        void loadCooperativeProducts(
+          pendingFetch.storeId,
+          pendingFetch.limit,
+          pendingFetch.searchTerm,
+          { showLoading: false }
+        )
+      }
+    }
+  }, [])
+
+  const loadData = useCallback(async () => {
     setLoading(true)
     const currentStoreId = await getCurrentStoreId()
     setStoreId(currentStoreId)
 
     if (!currentStoreId) {
+      setProductsLoading(false)
       setLoading(false)
       return alert('Este usuario no tiene una tienda asignada.')
     }
 
-    const { data: productsData, error: productsError } = await supabase
-      .from('products')
-      .select('id, name, sku, barcode, image_url, sale_price, coop_price, cost, stock, product_type')
-      .eq('store_id', currentStoreId)
-      .eq('active', true)
-      .in('web_visibility', ['coop', 'both'])
-      .order('name')
-
-    const { data: imagesData } = await supabase
-      .from('product_images')
-      .select('id, product_id, image_url, is_primary, sort_order')
-      .eq('store_id', currentStoreId)
-      .order('sort_order')
-
-    const { data: storeSettings } = await supabase
-      .from('stores')
-      .select('cooperative_pos_products_limit')
-      .eq('id', currentStoreId)
-      .maybeSingle()
-
-    const { data: commissionsData } = await supabase
-      .from('cooperative_commissions')
-      .select('cooperative_name, commission_percent, active')
-      .eq('store_id', currentStoreId)
-      .eq('active', true)
-
-    if (productsError) alert('Error cargando productos cooperativos: ' + productsError.message)
+    const [
+      { data: storeSettings },
+      { data: commissionsData },
+    ] = await Promise.all([
+      supabase
+        .from('stores')
+        .select('cooperative_pos_products_limit')
+        .eq('id', currentStoreId)
+        .maybeSingle(),
+      supabase
+        .from('cooperative_commissions')
+        .select('cooperative_name, commission_percent, active')
+        .eq('store_id', currentStoreId)
+        .eq('active', true),
+    ])
 
     const configuredLimit = Number((storeSettings as { cooperative_pos_products_limit?: number } | null)?.cooperative_pos_products_limit || 10)
     setVisibleProductsLimit([5, 10, 20, 50].includes(configuredLimit) ? configuredLimit : 10)
-    setProducts(productsData || [])
-    setProductImages(imagesData || [])
     setCooperativeCommissions(commissionsData || [])
     setLoading(false)
-  }
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 300)
+    return () => window.clearTimeout(timer)
+  }, [search])
+
+  useEffect(() => {
+    if (!storeId) return
+    void loadCooperativeProducts(storeId, visibleProductsLimit, debouncedSearch, { showLoading: !hasLoadedProductsRef.current })
+  }, [storeId, visibleProductsLimit, debouncedSearch, loadCooperativeProducts])
+
+  const productImageMap = useMemo(() => {
+    const images = new Map<string, ProductImage>()
+    productImages.forEach((image) => {
+      const current = images.get(image.product_id)
+      if (!current || image.is_primary) images.set(image.product_id, image)
+    })
+    return images
+  }, [productImages])
 
   function getProductMainImage(product: Product) {
-    const images = productImages.filter((image) => image.product_id === product.id)
-    const primary = images.find((image) => image.is_primary)
-
-    return primary?.image_url || images[0]?.image_url || product.image_url
+    return productImageMap.get(product.id)?.image_url || product.image_url
   }
 
   const filteredProducts = useMemo(() => {
     const query = search.toLowerCase().trim()
 
-    const matches = products.filter((product) => {
-      const text = `${product.name} ${product.sku || ''} ${product.barcode || ''}`.toLowerCase()
-      return query ? text.includes(query) : true
-    })
+    const matches = products.filter((product) => productMatchesSearch(product, query))
 
     return query ? matches : matches.slice(0, visibleProductsLimit)
   }, [products, search, visibleProductsLimit])
@@ -182,20 +265,22 @@ export default function CooperativasPage() {
   const selectedCooperative =
     cooperative === 'custom' ? customCooperative.trim() : cooperative
 
-  const total = cart.reduce((sum, item) => {
+  const productsTotal = cart.reduce((sum, item) => {
     const itemTotal = productPrice(item) * item.quantity
     const discount = Number(item.discount || 0)
     return sum + Math.max(0, itemTotal - discount)
   }, 0)
 
   const discountTotal = cart.reduce((sum, item) => sum + Number(item.discount || 0), 0)
+  const shipping = Math.max(0, Number(shippingCost || 0) || 0)
+  const total = productsTotal + shipping
 
   const selectedCommissionPercent = Number(
     cooperativeCommissions.find(
       (item) => item.cooperative_name.toLowerCase() === selectedCooperative.toLowerCase()
     )?.commission_percent || 0
   )
-  const cooperativeCommissionAmount = total * (selectedCommissionPercent / 100)
+  const cooperativeCommissionAmount = productsTotal * (selectedCommissionPercent / 100)
   const netReceived = Math.max(0, total - cooperativeCommissionAmount)
   const grossProfit = cart.reduce((sum, item) => {
     const itemTotal = productPrice(item) * item.quantity
@@ -278,11 +363,16 @@ export default function CooperativasPage() {
 
     if (phoneDigits.length < 7 && documentDigits.length < 5) return null
 
+    const filters: string[] = []
+    if (phoneDigits.length >= 7) filters.push(`phone.ilike.%${phoneDigits.match(/.{1,3}/g)?.join('%')}%`)
+    if (documentDigits.length >= 5) filters.push(`cedula.ilike.%${documentDigits.match(/.{1,3}/g)?.join('%')}%`)
+
     const { data, error } = await supabase
       .from('customers')
       .select('id, full_name, phone, cedula')
       .eq('store_id', storeId)
-      .limit(1000)
+      .or(filters.join(','))
+      .limit(20)
 
     if (error) {
       alert('Error buscando socio: ' + error.message)
@@ -326,9 +416,49 @@ export default function CooperativasPage() {
     setMemberPhone('')
     setExistingMemberId(null)
     setMemberLookupMessage('')
+    setShippingCost('')
     setCooperative(COOPERATIVES[0])
     setCustomCooperative('')
     searchRef.current?.focus()
+  }
+
+  async function verifyCartStockBeforeSale() {
+    if (!storeId) return null
+
+    const quantitiesByProduct = new Map<string, { name: string; quantity: number }>()
+    cart.forEach((item) => {
+      const current = quantitiesByProduct.get(item.id)
+      quantitiesByProduct.set(item.id, {
+        name: item.name,
+        quantity: (current?.quantity || 0) + Number(item.quantity || 0),
+      })
+    })
+
+    const productIds = Array.from(quantitiesByProduct.keys())
+    const { data, error } = await supabase
+      .from('products')
+      .select('id, name, stock')
+      .eq('store_id', storeId)
+      .in('id', productIds)
+
+    if (error) {
+      alert('No pude verificar el stock antes de registrar el crédito: ' + error.message)
+      return null
+    }
+
+    const stockByProduct = new Map((data || []).map((product) => [product.id, Number(product.stock || 0)]))
+    const insufficient = Array.from(quantitiesByProduct.entries()).find(([productId, item]) => {
+      return Number(stockByProduct.get(productId) || 0) < item.quantity
+    })
+
+    if (insufficient) {
+      const [productId, item] = insufficient
+      alert(`Stock insuficiente para ${item.name}. Disponible: ${Number(stockByProduct.get(productId) || 0)}. Solicitado: ${item.quantity}.`)
+      await loadCooperativeProducts(storeId, visibleProductsLimit, debouncedSearch, { showLoading: false })
+      return null
+    }
+
+    return { quantitiesByProduct, stockByProduct }
   }
 
   async function completeSale() {
@@ -344,6 +474,9 @@ export default function CooperativasPage() {
         return alert(`Debes agregar IMEI obligatorio de 15 numeros para ${item.name}`)
       }
     }
+
+    const verifiedStock = await verifyCartStockBeforeSale()
+    if (!verifiedStock) return
 
     setSaving(true)
 
@@ -381,8 +514,9 @@ export default function CooperativasPage() {
         customer_id: customerId,
         sale_channel: 'cooperative',
         cooperative_name: selectedCooperative,
-        subtotal: total,
+        subtotal: productsTotal,
         discount: discountTotal,
+        shipping_cost: shipping,
         total,
         payment_method_id: null,
         card_fee: 0,
@@ -427,18 +561,24 @@ export default function CooperativasPage() {
       return alert('Error guardando productos vendidos: ' + itemsError.message)
     }
 
-    for (const item of cart) {
-      await supabase
-        .from('products')
-        .update({ stock: item.stock - item.quantity })
-        .eq('store_id', storeId)
-        .eq('id', item.id)
-    }
+    const stockUpdates = await Promise.all(
+      Array.from(verifiedStock.quantitiesByProduct.entries()).map(async ([productId, item]) => {
+        const remainingStock = Math.max(0, Number(verifiedStock.stockByProduct.get(productId) || 0) - item.quantity)
+        return supabase
+          .from('products')
+          .update({ stock: remainingStock })
+          .eq('store_id', storeId)
+          .eq('id', productId)
+      })
+    )
+
+    const stockUpdateError = stockUpdates.find((result) => result.error)?.error
 
     setLastSale({
       saleId: sale.id,
       invoiceNumber: sale.invoice_number,
       total,
+      shippingCost: shipping,
       cooperativeName: selectedCooperative,
       commissionPercent: selectedCommissionPercent,
       commissionAmount: cooperativeCommissionAmount,
@@ -452,7 +592,9 @@ export default function CooperativasPage() {
     setMemberPhone('')
     setExistingMemberId(null)
     setMemberLookupMessage('')
-    await loadData()
+    setShippingCost('')
+    void loadCooperativeProducts(storeId, visibleProductsLimit, debouncedSearch, { showLoading: false })
+    if (stockUpdateError) alert('La venta fue registrada, pero no pude actualizar el inventario: ' + stockUpdateError.message)
   }
 
   if (loading) {
@@ -498,7 +640,9 @@ export default function CooperativasPage() {
           </div>
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            {filteredProducts.map((product) => (
+            {productsLoading ? Array.from({ length: Math.min(visibleProductsLimit, 6) }).map((_, index) => (
+              <div key={index} className="h-[280px] animate-pulse rounded-2xl border border-zinc-200 bg-zinc-100" />
+            )) : filteredProducts.map((product) => (
               <button
                 key={product.id}
                 onClick={() => addToCart(product)}
@@ -707,8 +851,22 @@ export default function CooperativasPage() {
             })}
           </div>
 
+          <div className="mt-5">
+            <label className="mb-2 block text-sm text-zinc-500">Envío</label>
+            <input
+              type="number"
+              min="0"
+              value={shippingCost}
+              onChange={(event) => setShippingCost(event.target.value)}
+              placeholder="Costo del envío"
+              className="w-full rounded-xl border border-zinc-300 bg-white px-3 py-3 outline-none focus:border-emerald-500"
+            />
+          </div>
+
           <div className="mt-5 space-y-3 border-t border-zinc-200 pt-4">
+            <BigRow label="Subtotal productos" value={productsTotal} />
             <BigRow label="Descuento" value={discountTotal} />
+            {shipping > 0 && <BigRow label="Envío" value={shipping} />}
             <BigRow label={`Comision cooperativa (${selectedCommissionPercent}%)`} value={cooperativeCommissionAmount} red />
             <BigRow label="Neto despues de comision" value={netReceived} />
             <BigRow label="Ganancia estimada" value={profitAfterCommission} profit />
@@ -747,6 +905,11 @@ export default function CooperativasPage() {
               <p className="text-2xl font-bold text-emerald-600">
                 {formatMoney(lastSale.total)}
               </p>
+
+              {lastSale.shippingCost > 0 && <>
+                <p className="mt-3 text-sm text-zinc-500">Envío</p>
+                <p className="font-bold">{formatMoney(lastSale.shippingCost)}</p>
+              </>}
 
               <p className="mt-3 text-sm text-zinc-500">Comision cooperativa ({lastSale.commissionPercent}%)</p>
               <p className="font-bold text-red-600">{formatMoney(lastSale.commissionAmount)}</p>

@@ -784,6 +784,7 @@ export default function VentasPage() {
                 <div className="mt-6 rounded-2xl bg-zinc-50 p-5">
                   <Row label="Total" value={formatMoney(selectedSale.total)} bold />
                   <Row label="Descuento" value={formatMoney(selectedSale.discount)} />
+                  {Number(selectedSale.shipping_cost || 0) > 0 && <Row label="Envío" value={formatMoney(selectedSale.shipping_cost)} />}
                   <Row label="Comision tarjeta" value={formatMoney(selectedSale.card_fee)} red />
                   <Row
                     label={`Comision cooperativa (${Number(selectedSale.cooperative_commission_percent || 0)}%)`}

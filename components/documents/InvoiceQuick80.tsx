@@ -59,6 +59,12 @@ function TotalsBlock({ sale }: { sale: Invoice80Sale }) {
         <span className="text-right">Descuento</span>
         <span className="text-right">{receiptMoney(sale.discount)}</span>
       </div>
+      {Number(sale.shipping_cost || 0) > 0 && (
+        <div className="grid grid-cols-[1fr_118px] items-center">
+          <span className="text-right">Envío</span>
+          <span className="text-right">{receiptMoney(sale.shipping_cost)}</span>
+        </div>
+      )}
       <div className="flex items-end justify-center gap-2 text-[24px] font-black">
         <span>Total</span>
         <span>{receiptMoney(sale.total)}</span>

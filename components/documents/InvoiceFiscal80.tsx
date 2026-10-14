@@ -70,6 +70,12 @@ function FiscalTotals({ sale }: { sale: Invoice80Sale }) {
         <span>Descuento</span>
         <span className="text-right">{receiptMoney(sale.discount)}</span>
       </div>
+      {Number(sale.shipping_cost || 0) > 0 && (
+        <div className="grid grid-cols-[112px_1fr] items-center gap-x-3">
+          <span>Envío</span>
+          <span className="text-right">{receiptMoney(sale.shipping_cost)}</span>
+        </div>
+      )}
       <div className="mt-4 flex items-end justify-center gap-2 text-[22px] font-black leading-none">
         <span>Total</span>
         <span>{receiptMoney(sale.total)}</span>
