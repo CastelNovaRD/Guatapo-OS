@@ -10,7 +10,19 @@ function hostnameFromRequest(request: NextRequest) {
 }
 
 export function proxy(request: NextRequest) {
-  if (!PUBLIC_HOSTS.has(hostnameFromRequest(request))) {
+  // Guatapo no expone Server Actions. Reject malformed or automated action
+  // requests before they reach Next's internal Server Action resolver.
+  if (request.headers.has('next-action')) {
+    return new NextResponse(null, {
+      status: 404,
+      headers: { 'Cache-Control': 'no-store' },
+    })
+  }
+
+  const hostname = hostnameFromRequest(request)
+  if (request.nextUrl.pathname !== '/') return NextResponse.next()
+
+  if (!PUBLIC_HOSTS.has(hostname)) {
     return NextResponse.next()
   }
 
@@ -21,5 +33,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: '/',
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt).*)'],
 }
